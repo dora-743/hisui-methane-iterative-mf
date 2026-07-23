@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local inputs and generated outputs
+data/*
+!data/README.md
+outputs/
+tmp/
+
+# Large hyperspectral and array files
+*.npy
+*.npz
+*.tif
+*.tiff
+*.hdr
+*.img
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
