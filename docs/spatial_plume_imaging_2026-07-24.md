@@ -22,21 +22,21 @@
 `E:\refit\CH4a.csv` のヘッダは
 `wavelength,0,0.1,0.2,...,5` である。本解析ではこれを ppm の濃度増分軸
 
-\[
-c\in\{0,0.1,\ldots,5\}\ \mathrm{ppm}
-\]
+$$
+c\in\lbrace 0,0.1,\ldots,5\rbrace\ \mathrm{ppm}
+$$
 
-として扱った。得られる \(\hat\alpha\) は、MODTRAN の \(c=0\) スペクトルに対する
+として扱った。得られる $\hat\alpha$ は、MODTRAN の $c=0$ スペクトルに対する
 スペクトル変化を何 ppm 分含むか、という **MODTRAN-equivalent ppm enhancement**
 である。HISUI 画素の大気中 CH4 絶対濃度そのものではない。絶対濃度化には、基準大気、
 気柱長、観測幾何、地表反射率を揃えた放射伝達計算が別に必要である。
 
 MODTRAN 放射輝度に100を掛ける単位換算は、今回使う対数勾配と対数比では相殺される。
 
-\[
+$$
 \log(100L(c))-\log(100L(0))
 =\log L(c)-\log L(0).
-\]
+$$
 
 したがって100倍係数を適用しなくても、ppm テンプレート、注入差分、matched filter の
 ppm 振幅は変わらない。100倍が必要なのは絶対放射輝度を直接比較するときだけである。
@@ -45,144 +45,144 @@ ppm 振幅は変わらない。100倍が必要なのは絶対放射輝度を直�
 
 ### SRF 畳み込み
 
-MODTRAN の高分解能放射輝度を \(L(\lambda_k,c)\)、HISUI バンド中心を
-\(\lambda_j\) とする。FWHM 12.5 nm の Gaussian SRF を仮定し、
+MODTRAN の高分解能放射輝度を $L(\lambda_k,c)$、HISUI バンド中心を
+$\lambda_j$ とする。FWHM 12.5 nm の Gaussian SRF を仮定し、
 
-\[
+$$
 \sigma_j=\frac{\mathrm{FWHM}_j}{2\sqrt{2\log2}},\qquad
 w_{jk}=\exp\left[-\frac{(\lambda_k-\lambda_j)^2}{2\sigma_j^2}\right]
-\]
+$$
 
-\[
+$$
 \widetilde L_j(c)=
 \frac{\sum_k w_{jk}L(\lambda_k,c)}{\sum_k w_{jk}}
-\]
+$$
 
 で HISUI 分解能へ落とす。
 
 ### 1 ppm 当たりの log-radiance 変化
 
-低濃度域 \(c=0\)–0.5 ppm でバンドごとに
+低濃度域 $c=0$–0.5 ppm でバンドごとに
 
-\[
+$$
 \log\widetilde L_j(c)=a_j+b_jc+\epsilon_{jc}
-\]
+$$
 
 を最小二乗で当てはめる。メタン増加では吸収帯の放射輝度が低下するため、検出に使う
 1 ppm 当たりの target vector は
 
-\[
+$$
 t_j=b_j=-u_j,\qquad u_j=-b_j>0
-\]
+$$
 
 である。
 
 ### continuum 除去
 
 弱吸収帯 1580–1750 nm、強吸収帯 2200–2390 nm のそれぞれで、定数と波長の
-一次項を nuisance とする。各帯の design matrix を \(X_g=[\mathbf 1,\lambda]\) とし、
-その直交補空間の正規直交基底を \(Q_g\) とする。実装は
+一次項を nuisance とする。各帯の design matrix を $X_g=[\mathbf 1,\lambda]$ とし、
+その直交補空間の正規直交基底を $Q_g$ とする。実装は
 
-\[
+$$
 y_g=Q_g^\mathsf T\log L_g,\qquad
 t_g=Q_g^\mathsf T t_g^{(raw)}
-\]
+$$
 
 を特徴量として使う。これにより、全体の明るさや滑らかな地表傾斜よりも、狭い CH4
 吸収形状を照合する。
 
 ## 2. MF と波長 cross-fit
 
-背景平均を \(\mu\)、\(\Sigma_\rho=(1-\rho)S+\rho\,\mathrm{diag}(S)\) として
+背景平均を $\mu$、$\Sigma_\rho=(1-\rho)S+\rho\,\mathrm{diag}(S)$ として
 shrinkage 共分散を
 
-\[
+$$
 \widehat\Sigma=\Sigma_\rho
 +\lambda\frac{\mathrm{tr}(\Sigma_\rho)}{p}I
-\]
+$$
 
-とする。残差 \(r=y-\mu\) に対する通常 matched filter は
+とする。残差 $r=y-\mu$ に対する通常 matched filter は
 
-\[
+$$
 \hat\alpha=
 \frac{t^\mathsf T\widehat\Sigma^{-1}r}
 {t^\mathsf T\widehat\Sigma^{-1}t},\qquad
 z=\frac{t^\mathsf T\widehat\Sigma^{-1}r}
 {\sqrt{t^\mathsf T\widehat\Sigma^{-1}t}}.
-\]
+$$
 
-\(\hat\alpha\) の単位は上で定義した ppm enhancement、\(z\) は背景分散で標準化した
+$\hat\alpha$ の単位は上で定義した ppm enhancement、$z$ は背景分散で標準化した
 スコアである。弱帯、強帯、両帯結合について別々に計算する。
 
-cross-fit では、吸収帯 \(A\) だけで非負振幅を選ぶ。
+cross-fit では、吸収帯 $A$ だけで非負振幅を選ぶ。
 
-\[
+$$
 \hat\alpha_A=\mathrm{clip}\left(
 \frac{t_A^\mathsf T\Sigma_{AA}^{-1}r_A}
 {t_A^\mathsf T\Sigma_{AA}^{-1}t_A},0,5\right).
-\]
+$$
 
-検証帯 \(B\) では \(A\) から予測できる背景変動を引き、条件付き innovation を作る。
+検証帯 $B$ では $A$ から予測できる背景変動を引き、条件付き innovation を作る。
 
-\[
+$$
 R=\Sigma_{BA}\Sigma_{AA}^{-1},\quad
 v_B=r_B-Rr_A,\quad
 t_{B|A}=t_B-Rt_A,
-\]
+$$
 
-\[
+$$
 \Omega_{B|A}=\Sigma_{BB}-
 \Sigma_{BA}\Sigma_{AA}^{-1}\Sigma_{AB}.
-\]
+$$
 
-選択した \(\hat\alpha_A\) を固定して、検証帯の Gaussian likelihood ratio を
+選択した $\hat\alpha_A$ を固定して、検証帯の Gaussian likelihood ratio を
 
-\[
+$$
 \log e_{A\to B}=
 \hat\alpha_A t_{B|A}^\mathsf T\Omega_{B|A}^{-1}v_B
 -\frac{1}{2}\hat\alpha_A^2
 t_{B|A}^\mathsf T\Omega_{B|A}^{-1}t_{B|A}
-\]
+$$
 
 とする。両方向を
 
-\[
+$$
 e_{bi}=\frac{e_{weak\to strong}+e_{strong\to weak}}{2}
-\]
+$$
 
 で平均したものが bidirectional cross-fit である。背景モデルは5分割の空間 block
 cross-fitting で、対象画素を学習に再使用しない。
 
 ## 3. 観測画像の領域選択と held-out 検証
 
-一方の帯のスコア画像を Gaussian \(\sigma=1.2\) pixel で、欠損を考慮して平滑化する。
+一方の帯のスコア画像を Gaussian $\sigma=1.2$ pixel で、欠損を考慮して平滑化する。
 
-\[
+$$
 \widetilde z=\frac{G_\sigma*(Mz)}{G_\sigma*M},
-\]
+$$
 
-ここで \(M\) は有効画素マスクである。250×250 tile（ROI は全体）ごとに
+ここで $M$ は有効画素マスクである。250×250 tile（ROI は全体）ごとに
 
-\[
+$$
 z_{rob}=\frac{\widetilde z-\mathrm{median}(\widetilde z)}
 {1.4826\,\mathrm{MAD}(\widetilde z)}
-\]
+$$
 
-とする。\(z_{rob}\ge3.5\) を core、\(z_{rob}\ge2.0\) を extent として8近傍で
-領域成長し、5–500画素の成分だけを残す。選択帯だけで決めた領域 \(R\) を、もう一方の
-帯の \(z\) で
+とする。$z_{rob}\ge3.5$ を core、$z_{rob}\ge2.0$ を extent として8近傍で
+領域成長し、5–500画素の成分だけを残す。選択帯だけで決めた領域 $R$ を、もう一方の
+帯の $z$ で
 
-\[
+$$
 T_R=\frac{\sum_{i\in R}w_i z_i^{(validation)}}{\sum_{i\in R}w_i},
 \qquad w_i=\max(z_{rob,i}-2,0.05)
-\]
+$$
 
-と評価する。領域マスクを周囲へランダムに平行移動した \(B\) 個のスコア
-\(T_R^{(b)}\) と比較し、
+と評価する。領域マスクを周囲へランダムに平行移動した $B$ 個のスコア
+$T_R^{(b)}$ と比較し、
 
-\[
+$$
 p_R=\frac{1+\sum_{b=1}^{B}\mathbf 1[T_R^{(b)}\ge T_R]}{B+1}
-\]
+$$
 
 を求める。最後に正方向候補同士、逆符号候補同士でそれぞれ Benjamini–Hochberg
 補正を行う。これは局所的な平行移動交換可能性を仮定する経験的診断であり、地表が
@@ -192,51 +192,51 @@ p_R=\frac{1+\sum_{b=1}^{B}\mathbf 1[T_R^{(b)}\ge T_R]}{B+1}
 
 二帯の ppm 整合度は
 
-\[
+$$
 D_R=\frac{|\bar\alpha_{weak}-\bar\alpha_{strong}|}
 {|\bar\alpha_{weak}|+|\bar\alpha_{strong}|}
-\]
+$$
 
 で併記する。0に近いほど二帯の推定濃度が一致する。
 
 ## 4. 空間プルームの厳密 MODTRAN 注入
 
-風下座標を \(s\)、風横座標を \(n\) とし、画像上のプルームを
+風下座標を $s$、風横座標を $n$ とし、画像上のプルームを
 
-\[
+$$
 w(s)=w_0+\kappa\max(s,0),
-\]
+$$
 
-\[
+$$
 c(s,n)=c_{peak}\exp\left(-\frac{\max(s,0)}{L}\right)
 \exp\left[-\frac12\left(\frac{n}{w(s)}\right)^2\right]
 \mathbf 1(s\ge0)
-\]
+$$
 
-とした。向き、発生点、\(L=15\)–32 pixel、\(w_0=1.5\)–3.5 pixel、
-\(\kappa=0.06\)–0.14 をランダム化する。
+とした。向き、発生点、$L=15$–32 pixel、$w_0=1.5$–3.5 pixel、
+$\kappa=0.06$–0.14 をランダム化する。
 
-各画素の既知 \(c_i\) について、固定 unit template を線形加算するのではなく、
+各画素の既知 $c_i$ について、固定 unit template を線形加算するのではなく、
 MODTRAN LUT を ppm 方向に補間し、
 
-\[
+$$
 \log L_{ij}^{(inj)}=\log L_{ij}^{(obs)}+
 \log\widetilde L_j(c_i)-\log\widetilde L_j(0)
-\]
+$$
 
 を注入した。背景平均・共分散は元画像だけで推定し、注入後に再学習していない。
 
 元画像スコアの99.9 percentile、すなわち経験的背景 FPR 0.001 を各手法の閾値に
-固定する。真の plume support は \(c_i\ge0.1c_{peak}\) とし、閾値超過画素の8近傍
+固定する。真の plume support は $c_i\ge0.1c_{peak}$ とし、閾値超過画素の8近傍
 連結成分が support と3画素以上重なれば「プルーム検出」とした。
 
-ppm 画像の回収は、support 内の真値 \(c\) と回収差分
-\(\Delta\hat\alpha\) に対して
+ppm 画像の回収は、support 内の真値 $c$ と回収差分
+$\Delta\hat\alpha$ に対して
 
-\[
+$$
 \hat\beta=\frac{c^\mathsf T\Delta\hat\alpha}{c^\mathsf Tc},\qquad
 \mathrm{RMSE}=\sqrt{\frac1N\sum_i(\Delta\hat\alpha_i-c_i)^2}
-\]
+$$
 
 および Pearson 相関で評価した。
 
@@ -250,15 +250,15 @@ ppm 画像の回収は、support 内の真値 \(c\) と回収差分
 正方向は BH FDR 10% を通過せず、逆方向は1領域が通過した。
 
 事前候補 R2 は弱帯選択で `y=98–112, x=95–108` の120画素として画像化された。
-しかし局所シフト \(p=0.132\)、BH \(q=0.3196\) で、弱帯0.433 ppmに対して
-強帯0.0279 ppm、\(D=0.879\) だった。画素ランキングでは最大 log-e 11.52、
+しかし局所シフト $p=0.132$、BH $q=0.3196$ で、弱帯0.433 ppmに対して
+強帯0.0279 ppm、$D=0.879$ だった。画素ランキングでは最大 log-e 11.52、
 40,000画素中3位だったが、空間・二帯整合性を課すとメタン確証にならない。
 RGB の明るい地表構造に重なるため、現状は surface/instrument confuser の説明が
 より妥当である。
 
 ROI 内で最小の正方向 p 値は `y=45–58, x=172–185` の88画素で、
-強帯0.117 ppm、弱帯0.195 ppm、\(p=0.0222\) だった。ただし多重補正後
-\(q=0.1332\) で、FDR 10%には達しない。
+強帯0.117 ppm、弱帯0.195 ppm、$p=0.0222$ だった。ただし多重補正後
+$q=0.1332$ で、FDR 10%には達しない。
 
 ### 全景の探索結果
 
@@ -272,8 +272,8 @@ ROI 内で最小の正方向 p 値は `y=45–58, x=172–185` の88画素で、
 
 数値的に最も二帯整合性が高い有意な正方向候補の一つは
 `y=1526–1576, x=1292–1342`、259画素で、強帯0.216 ppm、弱帯0.183 ppm、
-\(D=0.0824\)、\(p=0.005\)、\(q=0.0286\) だった。ただし p 値の分解能は
-\(1/(199+1)=0.005\) にすぎず、同じ全景で逆方向9領域が通るため、候補順位以上の
+$D=0.0824$、$p=0.005$、$q=0.0286$ だった。ただし p 値の分解能は
+$1/(199+1)=0.005$ にすぎず、同じ全景で逆方向9領域が通るため、候補順位以上の
 意味は持たせない。次の独立シーン照合とストライプ補正の対象として保存する。
 
 ### 空間注入による画像検出能力
@@ -304,7 +304,7 @@ cross-fit の両画像で回収された。一方、元背景に存在する斜�
 
 combined-alpha の ppm 回収は次の通りだった。
 
-|ピーク増分|平均傾き \(\hat\beta\)|平均相関|平均RMSE [ppm]|
+|ピーク増分|平均傾き $\hat\beta$|平均相関|平均RMSE [ppm]|
 |---:|---:|---:|---:|
 |0.1|1.1025|0.999999|0.00329|
 |0.2|1.0950|0.999925|0.00613|
