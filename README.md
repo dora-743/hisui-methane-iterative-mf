@@ -47,7 +47,9 @@ ROI CSVは次の列を持つ形式です。
 y,x,wave_485.00nm,...,wave_1687.89nm,...
 ```
 
-CH₄ LUT CSVは、波長列と複数の濃度・enhancement列を持つ形式です。波長はµmまたはnmを自動判別します。
+CH₄ LUT CSVは、波長列と複数の ppm 列（例: `0,0.1,...,5`）を持つ形式です。
+波長はµmまたはnmを自動判別します。出力される α は LUT の0 ppm列に対する
+MODTRAN-equivalent ppm enhancement で、絶対大気濃度ではありません。
 
 ## 実行例
 
@@ -124,6 +126,31 @@ python scripts/inspect_crossfit_candidates.py `
 完全には除去しないため、出力をそのまま厳密なFDR保証とは解釈しません。
 今回のデータで得た数値、負の結果、次の実験は
 [研究パイロット報告](docs/physics_aware_crossfit_pilot_2026-07-24.md)にまとめています。
+
+### 空間プルーム画像と二吸収帯の領域検証
+
+一方の吸収帯だけで空間候補を作り、もう一方の帯で局所シフト検定する観測画像と、
+実 HISUI 背景へ既知 ppm の MODTRAN プルームを注入して回収する画像ベンチマークを
+追加しました。
+
+![Spatial plume detection probability](docs/figures/spatial_plume_detection_probability.png)
+
+```powershell
+python scripts/spatial_region_crossvalidation.py `
+  --scene-csv "D:\research\code\all_roi_spectra200x200.csv" `
+  --analysis-dir outputs/crossfit_final_roi200 `
+  --shift-count 4999
+
+python scripts/spatial_plume_injection_benchmark.py `
+  --scene-csv "D:\research\code\all_roi_spectra200x200.csv" `
+  --modtran-csv "E:\refit\CH4a.csv" `
+  --output-dir outputs/spatial_plume_injection_final `
+  --peaks-ppm 0.1,0.2,0.5,1 `
+  --trials-per-peak 20
+```
+
+方法の数式、観測 ROI・全景の候補画像、濃度別検出確率、ppm 回収精度、解釈上の
+注意は [空間プルーム画像研究報告](docs/spatial_plume_imaging_2026-07-24.md) にあります。
 
 既定条件では、両帯域3 robust σ以上かつ相関補正joint zが4以上をcoreとし、両帯域2σ以上までextentを領域成長します。入力・出力パスや閾値は各スクリプトの `--help` で変更できます。
 
