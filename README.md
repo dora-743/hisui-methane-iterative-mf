@@ -81,6 +81,50 @@ python scripts/iterative_mf_1600nm_destriped.py `
 python scripts/fuse_1600_2200_methane_detection.py
 ```
 
+### 物理UAS＋波長cross-fitted e-value（研究パイロット）
+
+MODTRAN濃度系列をHISUIのSRFに畳み込み、通常MFと、片方の吸収帯で
+強度を選んでもう片方の未使用吸収帯で検証するe-valueを同時に計算します。
+大きな全体シーンCSVもチャンク処理されます。
+
+```powershell
+python scripts/physics_aware_crossfit_mf.py `
+  --scene-csv "D:\research\code\all_roi_spectra200x200.csv" `
+  --modtran-csv "E:\refit\CH4a.csv" `
+  --output-dir outputs/crossfit_final_roi200
+
+python scripts/physics_aware_crossfit_mf.py `
+  --scene-csv "E:\refit\all_map_spectra.csv" `
+  --modtran-csv "E:\refit\CH4a.csv" `
+  --output-dir outputs/crossfit_final_full_scene `
+  --spatial-block-size 20 `
+  --local-tile-size 250 `
+  --local-tile-halo 1
+```
+
+主な出力は `analysis_summary.json`、半人工注入の
+`injection_benchmark.csv`、`candidate_pixels.csv`、`overview.png` です。
+MODTRAN放射輝度を一律100倍しても、log-radiance勾配として求めるUASには
+数学的に影響しません。100倍係数は絶対放射輝度の診断にだけ使います。
+各吸収帯では既定でlog-radianceの定数項と一次傾きを除き、地表アルベドや
+広帯域の明るさ差ではなくCH₄吸収形状を照合します（`--continuum-degree 1`）。
+2.40 µm端の1バンドは全体シーンで走査方向アーティファクトを強く拾ったため、
+強吸収帯の既定上限は2.390 µmです。逆符号CH₄対照と、正逆を対にした裾診断も
+同時に保存します。候補成分のRGB・局所スペクトル図は次のコマンドで作れます。
+
+```powershell
+python scripts/inspect_crossfit_candidates.py `
+  --scene-csv "E:\refit\all_map_spectra.csv" `
+  --analysis-dir outputs/crossfit_final_full_scene
+```
+
+注意: 現在のe-valueはGaussian背景のplug-inパイロットです。平均・共分散を
+外部背景データで固定した場合に理論上の条件付き妥当性が得られます。この
+スクリプトは空間block cross-fittingで同一画素の再利用を避けますが、空間依存を
+完全には除去しないため、出力をそのまま厳密なFDR保証とは解釈しません。
+今回のデータで得た数値、負の結果、次の実験は
+[研究パイロット報告](docs/physics_aware_crossfit_pilot_2026-07-24.md)にまとめています。
+
 既定条件では、両帯域3 robust σ以上かつ相関補正joint zが4以上をcoreとし、両帯域2σ以上までextentを領域成長します。入力・出力パスや閾値は各スクリプトの `--help` で変更できます。
 
 ## テスト
