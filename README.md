@@ -173,13 +173,125 @@ python scripts/known_site_r2_validation.py `
 
 既定条件では、両帯域3 robust σ以上かつ相関補正joint zが4以上をcoreとし、両帯域2σ以上までextentを領域成長します。入力・出力パスや閾値は各スクリプトの `--help` で変更できます。
 
+### L1G からの省メモリ抽出と複数シーン品質管理
+
+185バンドのL1G GeoTIFFを全展開せず、必要なタイルだけを読み出して従来形式の
+`y,x,wave_*` CSVへ変換できます。同時に、入力製品、元画像内のROI境界、波長、
+放射輝度換算、座標系をJSON sidecarへ保存します。
+
+```powershell
+python scripts/export_hisui_region_spectra.py `
+  --input "E:\path\to\HSHL1G_product" `
+  --output-csv outputs/roi_spectra.csv `
+  --center-y 1000 --center-x 1000 --height 200 --width 200 `
+  --overwrite
+```
+
+Permian Basinの複数L1G製品には、雲プロキシ、飽和画素、`QA_DM`（dead-pixel
+correction適用）および`QA_IM`（bad-pixel interpolation適用）の厳格マスクを先に
+適用し、雲が多いシーンを候補順位から除外します。方向性ストライプ補正はPermian
+で以前推定した方向を使うため、一般の地域には既定適用せず明示的に有効化します。
+
+```powershell
+python scripts/screen_hisui_l1g_scenes.py `
+  --product-root "E:\path\to\Permian_products" `
+  --modtran-csv "E:\refit\CH4a.csv" `
+  --known-site-csv docs/known_sites_hisui.csv `
+  --cloud-profile cirrus_sensitive `
+  --enable-directional-destriping `
+  --save-score-maps `
+  --output-dir outputs/multiscene_l1g_permian
+```
+
+地獄の門の同一観測・新旧L1G処理版は、裸の画素番号ではなく投影座標で位置合わせし、
+同じ背景モデルで比較します。明るい砂漠では雲判定を3段階で感度解析してください。
+
+```powershell
+python scripts/compare_hisui_reprocessing_pair.py `
+  --old-product "E:\path\to\old_product" `
+  --new-product "E:\path\to\new_product" `
+  --modtran-csv "E:\refit\CH4a.csv" `
+  --site-easting 622433.7895 --site-northing 4456781.2984 `
+  --cloud-profile desert_balanced `
+  --output-dir outputs/darvaza_reprocessing
+```
+
+旧R2を後から動かさず、200×200 ROIモデルと全景モデルの同じ固定領域を比較する
+感度監査も追加しました。
+
+```powershell
+python scripts/compare_r2_analysis_contexts.py `
+  --roi-analysis-dir outputs/crossfit_final_roi200 `
+  --full-analysis-dir outputs/crossfit_final_full_scene `
+  --strict-scene-output outputs/multiscene_l1g_permian/HSHL1G_N320W1032_20221030160051_20231127193053 `
+  --output-dir outputs/r2_analysis_context_sensitivity
+```
+
+別日時の同一nominal tileでscore mapを比較する場合は、両方を `--save-score-maps` 付きで
+screenした後、投影グリッドの共通領域だけを使います。同位置の高値反復は地表・位置ずれ・
+装置artifactの診断であり、plume確認ではありません。
+
+```powershell
+python scripts/compare_hisui_repeat_acquisitions.py `
+  --first-product "E:\path\to\first_product" `
+  --second-product "E:\path\to\second_product" `
+  --first-scene-output outputs/multiscene_l1g_permian/first_product_id `
+  --second-scene-output outputs/multiscene_l1g_permian/second_product_id `
+  --output-dir outputs/repeat_acquisition
+```
+
+バッチ完了後、正側／逆符号側の全3σ画素と3画素以上の連結成分を、有効100万画素当たりで
+集計できます。`--spatial-union` は取得UTC分ごとに投影画素をunionし、隣接タイルの同一地上
+画素を1回だけ数える感度解析も保存します（UTC分は公式orbit/strip IDではない再現用heuristicです）。
+
+```powershell
+python scripts/summarize_multiscene_tail_balance.py `
+  --batch-dir outputs/multiscene_l1g_permian `
+  --spatial-union
+```
+
+上位候補は全景の最大値だけで判断せず、browse、cloud/valid、弱帯、強帯、dual、逆符号を
+同じcropで確認します。
+
+```powershell
+python scripts/plot_hisui_candidate_crop.py `
+  --product-dir "E:\path\to\HSHL1G_product" `
+  --scene-output outputs/multiscene_l1g_permian/HSHL1G_product_id `
+  --candidate-rank 1 --tail positive_ch4 --half-size 40 `
+  --output-dir outputs/candidate_crop
+```
+
+New Mexicoの候補は、OCD公式ArcGIS RESTのOil Wells / Gas Wellsを同じ投影座標で照会し、
+現在の台帳点までの距離を図にできます。EPSG:32613と台帳native EPSG:26913のdatum変換を
+ArcGISへ明示し、生レスポンスとprovenance JSONも保存します。設備近接は撮像時の排出証拠では
+ありません。NASA POWERの緯度経度・UTC日時を指定すると、10 m風をAPIから取得し、request
+URL・query・生JSON・SHA-256を保存したうえで風下方向だけを模式表示します。
+
+```powershell
+python scripts/plot_candidate_well_context.py `
+  --candidate-easting 653840 --candidate-northing 3566440 `
+  --epsg 32613 --radius-m 750 --label-count 5 `
+  --power-latitude 32.2241 --power-longitude -103.3674 `
+  --power-date-utc 2022-10-30 --power-hour-utc 16 `
+  --output-dir outputs/candidate_well_context
+```
+
+方法、数式、雲除外を含む全結果と次の研究方針は
+[複数地域L1Gメタン画像研究報告](docs/multiregion_l1g_methane_2026-07-28.md) にまとめています。
+
 ## テスト
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
 
-## 今回の200×200 ROIでの結果
+## 旧200×200 ROI pipelineでの履歴的結果
+
+以下は固定R2を含む旧ROI pipelineの結果であり、最終的なQA-strict全景screenの判定では
+ありません。旧設定での感度を記録するため残しています。現在の結論と全地域比較は
+[multiregion L1G methane report](docs/multiregion_l1g_methane_2026-07-28.md)を参照してください。
+同報告の最終screenではR2のdual local z最大は1.659、$z\ge3$ は0画素で、候補閾値を
+通過していません。
 
 |候補|core / extent|ROI座標 (y, x)|joint z 最大|
 |---|---:|---|---:|
