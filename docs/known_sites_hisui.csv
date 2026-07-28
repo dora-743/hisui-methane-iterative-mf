@@ -1,0 +1,3 @@
+site_id,name,epsg,easting_m,northing_m,latitude,longitude,source_kind,source_url,note
+keystone_general,Keystone Gas Plant general location,32613,685020.9165,3536104.4465,31.945833,-103.042500,TCEQ permit general-location marker,https://records.tceq.texas.gov/cs/idcplg?IdcService=TCEQ_EXTERNAL_SEARCH_GET_FILE&Rendition=Web&dID=7520096,General facility location rather than equipment-level source coordinate
+darvaza_crater,Darvaza gas crater,32640,622433.7895,4456781.2984,40.252540,58.439620,OpenStreetMap/Wikidata coordinate,https://www.wikidata.org/wiki/Q70458,Used as a fixed validation location; WGS84 converted to the product UTM zone
