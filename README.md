@@ -152,6 +152,25 @@ python scripts/spatial_plume_injection_benchmark.py `
 方法の数式、観測 ROI・全景の候補画像、濃度別検出確率、ppm 回収精度、解釈上の
 注意は [空間プルーム画像研究報告](docs/spatial_plume_imaging_2026-07-24.md) にあります。
 
+### 既知ガスプラント R2 の追試
+
+R2 を Keystone Gas Plant の既知施設候補として固定し、旧 R2 core と現行の
+弱帯選択領域を区別した再集計、同サイズ移動矩形との比較、TCEQ 一般位置、観測時刻の
+MERRA-2 風向をまとめました。
+
+![Known-site R2 zoom](docs/figures/known_site_r2_zoom.png)
+
+```powershell
+python scripts/known_site_r2_validation.py `
+  --scene-csv "D:\research\code\all_roi_spectra200x200.csv" `
+  --analysis-dir outputs/crossfit_final_roi200 `
+  --historical-dir "C:\path\to\iterative_mf_1600nm_destriped" `
+  --output-dir outputs/known_site_r2_validation
+```
+
+結果と解釈は
+[既知ガスプラント R2 の追試報告](docs/known_site_r2_followup_2026-07-28.md) にあります。
+
 既定条件では、両帯域3 robust σ以上かつ相関補正joint zが4以上をcoreとし、両帯域2σ以上までextentを領域成長します。入力・出力パスや閾値は各スクリプトの `--help` で変更できます。
 
 ## テスト
