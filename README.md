@@ -250,6 +250,23 @@ python scripts/summarize_multiscene_tail_balance.py `
   --spatial-union
 ```
 
+雲量とQAの基準を通った `quality_class=usable` 製品だけを対象に、1600 nm側または
+2200–2390 nm側の片方だけでも局所zが3以上となる領域を列挙できます。同一UTC分の
+隣接タイルは投影グリッド上でunionし、正側と全く同じ条件の逆符号対照も出力します。
+
+```powershell
+python scripts/summarize_single_band_candidates.py `
+  --batch-dir outputs/multiscene_l1g_permian `
+  --output-dir outputs/single_band_usable_review `
+  --known-site-csv docs/known_sites_hisui.csv `
+  --known-site-id keystone_general `
+  --site-radius-pixels 10
+```
+
+出力される全候補、画像確認用shortlist、保守的single-window判定はいずれも探索用です。
+今回の数値、候補ギャラリー、数式、R2への影響は
+[usableシーン単帯域候補報告](docs/single_band_usable_candidates_2026-08-02.md)にまとめています。
+
 上位候補は全景の最大値だけで判断せず、browse、cloud/valid、弱帯、強帯、dual、逆符号を
 同じcropで確認します。
 
