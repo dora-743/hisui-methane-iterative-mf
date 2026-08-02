@@ -10,7 +10,8 @@ HISUIハイパースペクトルデータを対象に、1600 nm帯のIterative M
 
 1. 1580–1700 nmからCH₄ unit absorption spectrumを作成
 2. Iterative MFによる1600 nm αマップの推定
-3. QA_DM・CTメタデータに基づく方向性ストライプ除去
+3. QA_DMによる有効画素管理と、補正法ごとに固定した傾きによる方向性ストライプ除去
+   （PDF-DWTの広縞傾きはCTではなく画像から独立推定）
 4. 2200 nm結果に残った細線の追加補正
 5. 1600/2200 nmのrobust z-score融合
 6. 負側tail、空間シフト、既知地表線による偽陽性検査
@@ -262,6 +263,27 @@ python scripts/summarize_single_band_candidates.py `
   --known-site-id keystone_general `
   --site-radius-pixels 10
 ```
+
+提供PDFに記録された、CTとは別に求めた広縞傾き1.2571723でのHaar DWT
+（level 3–5）と、細縞傾き0.9773461でのline-median補正は、元batchを変更しない
+感度解析として次の順で実行します。
+
+```powershell
+python scripts/postprocess_score_maps_pdf_dwt.py `
+  --source-batch outputs/multiscene_l1g_permian_final_v4 `
+  --output-batch outputs/multiscene_l1g_permian_pdf_dwt_v3 `
+  --minimum-threshold-coefficients 300
+
+python scripts/summarize_single_band_candidates.py `
+  --batch-dir outputs/multiscene_l1g_permian_pdf_dwt_v3 `
+  --output-dir outputs/single_band_usable_review_pdf_dwt_v3 `
+  --threshold 3 --minimum-pixels 3 `
+  --known-site-csv docs/known_sites_hisui.csv `
+  --known-site-id keystone_general --site-radius-pixels 10
+```
+
+完全supportのlevel 5は推定係数が少ないため、`500`へ変更してlevel 5を停止した結果も
+併記します。今回の比較ではPDF-DWTをprimary補正に採用していません。
 
 出力される全候補、画像確認用shortlist、保守的single-window判定はいずれも探索用です。
 今回の数値、候補ギャラリー、数式、R2への影響は

@@ -2,6 +2,9 @@
 
 作成日: 2026-08-02
 
+第1–7節は従来の固定方向profile補正による主解析、第8節は提供PDFに記録された
+DWT→line-median補正へ置き換えた感度再解析である。両者を独立観測の反復とは数えない。
+
 ## 結論
 
 `quality_class=usable` の7製品だけを使い、1600 nm側（実際の解析窓は1580–1750 nm）または
@@ -264,3 +267,261 @@ python scripts/summarize_single_band_candidates.py `
 - `single_band_candidate_gallery.png`: 観測日・supportを均等化した候補画像
 
 結果は候補screenであり、FDR制御済み検出、plume確認、排出源帰属、排出量推定ではない。
+
+## 8. PDF記載のDWT→median再解析
+
+### 8.1 再解析の位置づけ
+
+提供PDFに記録された処理順を、同じ7 usable製品の**未補正MF score**から別分岐として
+再実行した。従来のprofile補正済み画像へDWTを重ねてはいない。広い縞の傾き
+
+$$
+a_b=1.257172298918948
+$$
+
+はCT方向ではなく、PDFで画像から独立に求めた固定値である。今回の7製品に合わせて
+再最適化していない。細い縞にはQA traceから得た別の固定傾き
+
+$$
+a_t=0.9773460526106752
+$$
+
+を使った。したがって、処理順は
+
+$$
+\text{raw MF}
+\longrightarrow
+\text{broad DWT at }a_b
+\longrightarrow
+\text{thin line median at }a_t
+\longrightarrow
+\text{local }z
+$$
+
+であり、広縞と細縞を同じCT傾きで補正する方法ではない。
+
+### 8.2 候補保護mask
+
+弱帯・強帯それぞれのraw scoreから、2節と同じ局所標準化で $r_b$ を求めた。保護maskは
+正側だけを優遇しないよう絶対値を使い、両帯域で共通に固定した。
+
+$$
+P_0=
+\bigcup_{b\in\{1600,2200\}}
+\left[
+\{|r_b|\ge4\}
+\cup
+\operatorname{CC}_{\ge3}\{|r_b|\ge3\}
+\right]
+$$
+
+$$
+P=\operatorname{dilate}_2(P_0)
+$$
+
+$\operatorname{CC}_{\ge3}$ は8近傍で3画素以上の成分だけを残す演算である。$P$ はDWT前に
+一度だけ作り、弱帯・強帯、正側・逆符号側で共有した。DWTへ渡す数値画像では保護位置を
+最近傍の非保護値で一時的に埋めるが、後述の閾値推定supportからは除く。推定されたstripe
+成分は保護位置からも差し引くため、これは「候補画素を不変に凍結するmask」ではない。
+
+### 8.3 support-aware Haar DWT
+
+画像座標の行 $p_y$ は下向きに増えるため、
+
+$$
+b=p_y-a_b p_x,
+\qquad
+\theta_b=\arctan(a_b)=+51.5^\circ
+$$
+
+だけSciPy画像を回転すると、広い縞が水平detailへ対応する。逆回転は $-51.5^\circ$ である。
+各全景を回転しても元画像が切れず、かつ $2^6$ で割り切れる中央canvasは2624×2624画素と
+した。数値画像の外側はreflect paddingする一方、valid supportの外側は0として別に回転した。
+
+回転画像 $R_{\theta_b}d$ の6段Haar分解を
+
+$$
+W(R_{\theta_b}d)
+=
+\left(A_6,\{H_\ell,V_\ell,D_\ell\}_{\ell=1}^{6}\right)
+$$
+
+とする。係数 $k$ のfootprintにおける回転後valid coverage平均を $v_{\ell k}$、validかつ
+非保護coverage平均を $u_{\ell k}$ とした。閾値推定は
+
+$$
+E_{\ell k}=\mathbf 1[u_{\ell k}=1]
+$$
+
+すなわち100% validかつ非保護の係数だけで行い、補正適用は
+
+$$
+A_{\ell k}=\mathbf 1[v_{\ell k}\ge0.95]
+$$
+
+とした。この分離により、無効画素、保護画素、reflect paddingがDWT閾値を決めることを
+避けた。level 3–5の水平detailだけについて、$|H_\ell|$ と $|V_\ell|$ のヒストグラム差から
+scene・band・levelごとに $T_\ell$ を求め、
+
+$$
+\lambda_\ell=0.75T_\ell
+$$
+
+$$
+\widetilde H_{\ell k}=
+\begin{cases}
+\operatorname{sign}(H_{\ell k})
+\max(|H_{\ell k}|-\lambda_\ell,0),&A_{\ell k}=1,\\
+H_{\ell k},&A_{\ell k}=0
+\end{cases}
+$$
+
+とsoft-thresholdした。$V_\ell,D_\ell$ とlevel 1、2、6は変更しない。20 m画素ではlevel
+3、4、5のsupportはそれぞれ約160、320、640 mであり、想定プルーム尺度とも重なる。
+
+完全supportで閾値推定に使えた係数数はlevel 3で18,018–19,186、level 4で
+3,253–3,585、level 5で311–381だった。level 5は128 binに対して1 bin平均2.4–3.0係数しか
+ない。そこで、500係数未満なら停止する版と、PDFどおりlevel 5まで通すため下限を300にした
+版を両方残し、後者だけを唯一の確定設定とは扱わない。
+
+### 8.4 細い縞のline median
+
+DWT後のscoreを $d_{\mathrm{DWT}}$ とし、追加で1画素膨張した保護mask
+$P_t=\operatorname{dilate}_1(P)$ を除外して、
+
+$$
+k(p)=
+\operatorname{round}
+\left(
+\frac{p_y-a_t p_x}{2}
+\right)
+$$
+
+により幅2画素の線へ分けた。各線のoffsetは
+
+$$
+o_k=
+\operatorname{median}_{q:k(q)=k,\,V(q)=1,\,P_t(q)=0}
+d_{\mathrm{DWT}}(q)
+-
+\operatorname{median}_{q:V(q)=1,\,P_t(q)=0}
+d_{\mathrm{DWT}}(q)
+$$
+
+であり、最終scoreは
+
+$$
+d_{\mathrm{final}}(p)=d_{\mathrm{DWT}}(p)-o_{k(p)}
+$$
+
+とした。非保護画素が5未満の線では、保護画素をfallbackへ混ぜず、隣接する有効線の
+offsetを補間した。最後に $d_{\mathrm{final}}$ から局所zを再計算し、第2–4節と全く同じ
+$z\ge3$、3画素以上、正負対称の候補規則へ通した。
+
+### 8.5 全景候補の結果
+
+| 指標 | 従来profile補正 | 完全support L3–4（下限500） | 完全support L3–5（下限300） |
+|---|---:|---:|---:|
+| 正側 / 逆符号 OR領域 | 1,847 / 2,199 | 1,849 / 2,233 | 1,835 / 2,252 |
+| 正 / 逆比 | 0.840 | 0.828 | 0.815 |
+| shortlist | 243 / 287 | 272 / 313 | 285 / 325 |
+| 保守的single-window | 2 / 5 | 1 / 9 | 1 / 10 |
+| strict-dual OR領域 | 73 / 25 | 85 / 28 | 87 / 28 |
+
+![従来profile補正とPDF-DWTの正負候補数比較](figures/pdf_dwt_candidate_balance.png)
+
+level 5を止めても通しても、全OR領域と保守候補では逆符号対照が正側以上に残った。
+strict dualの正 / 逆比は2.920から3.107へ増えたが、FDR校正済み検出ではなく、正負双方の
+tailと地表・線状artifactを含むため、これだけをDWTの性能向上とは解釈しない。
+
+従来補正後と最終DWT補正後の方向profile robust standard deviationを14 scene×bandで
+比較すると、広縞方向は改善3、悪化11で、相対変化の中央値は**+22.7%**だった。細縞方向は
+改善12、悪化2で、中央値は**−14.0%**だった。後段の細線medianは多くの画像で機能したが、
+広縞DWTは従来profile subtractionを上回らなかった。
+
+PDF-DWT後に保守条件を通る正側は、2022-10-30のE=683900 m、N=3523280 mにある
+`1600_only` 1領域だけだった。面積19画素、$z\ge5$ core 8画素、peak 7.286で、2200 nm
+peakは2.060である。従来補正でも同じ場所が面積17画素、peak 7.004で残っていた。
+もう1件の従来保守候補E=646520 m、N=3560080 mは、DWT後に1600 nm 14画素と2200 nm
+1画素の`both_noncoincident`となった。同一画素での両帯域重複は0なので、dual確認ではない。
+
+![PDF-DWT再解析後に再選択した単帯域候補ギャラリー](figures/single_band_usable_candidate_gallery_pdf_dwt_v3.png)
+
+このgalleryは旧図と同じ位置を固定したbefore / afterではなく、各補正後に観測ストリップと
+spectral supportごとに候補を再選択したcatalogueである。複数panelに長い斜線が残るため、
+画像上位値だけをplumeと読まない。
+
+### 8.6 R2一般位置proxyの結果
+
+2022-10-30のKeystone Gas Plant一般位置を中心とする21×21画素監査窓を、同じ地上座標・
+同じ色軸で比較した。
+
+| 指標 | 従来profile補正 | PDF-DWT L3–5 |
+|---|---:|---:|
+| 1600 nm $z\ge3$ | 1画素 | 5画素 |
+| 1600 nm peak | 3.646 | 3.965 |
+| 2200–2390 nm $z\ge3$ | 0画素 | 0画素 |
+| 2200–2390 nm peak | 2.574 | 2.568 |
+| dual peak | 1.955 | 2.002 |
+| 最近傍1600 nm retained成分まで | 1.18 km | 189 m |
+
+![R2一般位置proxy周辺の従来補正とPDF-DWT比較](figures/pdf_dwt_site_window_comparison.png)
+
+破線がsite中心21×21画素窓、黒い十字が一般位置proxy、黄色が $z=3$ contourである。
+DWT後の1600 nm側5画素は8近傍で3画素と2画素に分かれ、保持されるのは最小条件ちょうどの
+3画素成分だけだった。そのpeakはsiteから約215 m、最近傍画素は189 mで、peak 3.965、
+$z\ge5$ core 0、2200 nm counterpart peak 0.704、shortlist外である。したがって、
+R2近傍の弱帯局所高値への感度は上がったが、**2200 nm支持を伴うメタン再検出ではない**。
+差分画像に広い斜め構造が見えることからも、この変化は前処理依存として扱う。
+
+### 8.7 研究上の判断と次の検証
+
+PDFの傾きと処理順を反映しても、広縞profileと逆符号対照は従来法より改善しなかった。
+よってPDF-DWTは**感度解析分岐として保存し、primary pipelineには採用しない**。一方、
+細縞傾き0.977のline medianは独立に有望なので、広縞法と切り分けた検証対象にする。
+
+level 3–5は160–640 mのプルーム尺度と重なる。低振幅プルームは保護maskへ入らない可能性が
+あるため、補正法の採択前に、MODTRAN log-radiance差をMF前の実HISUI放射輝度へ加えるpaired
+注入試験が必要である。背景MF modelを注入前に固定し、stripe平行・直交・ランダム方向、
+160 / 320 / 640 m尺度を含め、少なくとも次を確認する。
+
+- 同じ経験的false-positive rateでの検出率低下が5 percentage points以内
+- peak・積分信号の中央値保持率が0.9–1.1、下位10%保持率が0.8以上
+- 重心誤差の増加が1画素以内
+- 逆符号成分密度が増えない
+- level 5の閾値をbootstrapしたときの変動係数が10%以内
+
+既存200×200 ROIのMODTRAN注入はfull-scene DWT、level 5 support、候補保護maskを通して
+いないため、この採択判定の代用にはしない。
+
+### 8.8 再現方法
+
+PDFどおりlevel 3–5を実行する完全support版は次で再現できる。
+
+```powershell
+python scripts/postprocess_score_maps_pdf_dwt.py `
+  --source-batch outputs/multiscene_l1g_permian_final_v4 `
+  --output-batch outputs/multiscene_l1g_permian_pdf_dwt_v3 `
+  --minimum-threshold-coefficients 300
+
+python scripts/summarize_single_band_candidates.py `
+  --batch-dir outputs/multiscene_l1g_permian_pdf_dwt_v3 `
+  --output-dir outputs/single_band_usable_review_pdf_dwt_v3_2026-08-02 `
+  --threshold 3 --minimum-pixels 3 --gallery-per-support 1 `
+  --known-site-csv docs/known_sites_hisui.csv `
+  --known-site-id keystone_general --site-radius-pixels 10
+
+python scripts/compare_pdf_dwt_reanalysis.py `
+  --profile-summary outputs/single_band_usable_review_2026-08-02/single_band_summary.json `
+  --pdf-summary outputs/single_band_usable_review_pdf_dwt_v3_2026-08-02/single_band_summary.json `
+  --profile-batch outputs/multiscene_l1g_permian_final_v4 `
+  --pdf-batch outputs/multiscene_l1g_permian_pdf_dwt_v3 `
+  --posthoc-summary outputs/multiscene_l1g_permian_pdf_dwt_v3/posthoc_pdf_dwt_summary.json `
+  --known-site-csv docs/known_sites_hisui.csv `
+  --known-site-id keystone_general `
+  --output-dir outputs/pdf_dwt_reanalysis_v3_2026-08-02
+```
+
+level 5を停止する感度解析は、最初のコマンドの出力先を別名にし、
+`--minimum-threshold-coefficients 500` として同じ集計へ通す。元のscore mapsは変更せず、
+派生batchのmanifest、script SHA-256、入力hash、scene・band・level別thresholdとsupport数を保存する。
