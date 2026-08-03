@@ -38,7 +38,7 @@ from summarize_single_band_candidates import (
 )
 
 
-ANALYSIS_VERSION = "2026-08-02-pdf-dwt-compare-v1"
+ANALYSIS_VERSION = "2026-08-03-pdf-dwt-compare-v2"
 COMPARISON_METRICS = (
     ("all_or_regions", "All OR regions", "positive_region_count", "reverse_region_count"),
     (
@@ -88,13 +88,16 @@ def _sha256(path: Path) -> str:
 
 
 def build_aggregate_rows(
-    profile_aggregate: Mapping[str, Any], pdf_aggregate: Mapping[str, Any]
+    profile_aggregate: Mapping[str, Any],
+    pdf_aggregate: Mapping[str, Any],
+    *,
+    pdf_method_label: str = "PDF-DWT then median",
 ) -> list[dict[str, Any]]:
     """Return matched positive/reverse rows for the two correction methods."""
     rows: list[dict[str, Any]] = []
     for method_key, method_label, aggregate in (
         ("profile_only", "Profile-only", profile_aggregate),
-        ("pdf_dwt_then_median", "PDF-DWT then median", pdf_aggregate),
+        ("pdf_dwt_then_median", pdf_method_label, pdf_aggregate),
     ):
         for metric_key, metric_label, positive_key, reverse_key in COMPARISON_METRICS:
             positive = int(aggregate[positive_key])
@@ -118,7 +121,13 @@ def build_aggregate_rows(
 def _profile_diagnostics(posthoc: Mapping[str, Any]) -> dict[str, Any]:
     changes: list[dict[str, Any]] = []
     requested_rows: list[Mapping[str, Any]] = []
+    supported_scene_count = 0
     for scene in posthoc.get("scene_diagnostics", []):
+        if scene.get("broad_slope_estimation", {}).get("slope_status") in (
+            None,
+            "supported",
+        ):
+            supported_scene_count += 1
         for band in ("weak", "strong"):
             comparison = scene[band]["comparison"]
             source_broad = float(comparison["source_broad_profile_rstd"])
@@ -170,10 +179,14 @@ def _profile_diagnostics(posthoc: Mapping[str, Any]) -> dict[str, Any]:
         ],
         dtype=float,
     )
-    if broad_changes.size == 0 or thin_changes.size == 0 or not requested_rows:
-        raise ValueError("posthoc summary lacks finite profile or requested-DWT rows")
+    if broad_changes.size == 0 or thin_changes.size == 0:
+        raise ValueError("posthoc summary lacks finite profile rows")
+    coefficient_counts = [
+        int(row["estimate_coefficient_count"]) for row in requested_rows
+    ]
     return {
         "scene_band_count": len(changes),
+        "supported_scene_count": supported_scene_count,
         "broad_profile_improved_count": int(np.count_nonzero(broad_changes < 0)),
         "broad_profile_worsened_count": int(np.count_nonzero(broad_changes > 0)),
         "broad_profile_median_relative_change": float(np.median(broad_changes)),
@@ -184,11 +197,11 @@ def _profile_diagnostics(posthoc: Mapping[str, Any]) -> dict[str, Any]:
         "filtered_dwt_operation_count": int(
             sum(bool(row["filtered"]) for row in requested_rows)
         ),
-        "minimum_estimation_coefficient_count": int(
-            min(int(row["estimate_coefficient_count"]) for row in requested_rows)
+        "minimum_estimation_coefficient_count": (
+            int(min(coefficient_counts)) if coefficient_counts else None
         ),
-        "maximum_estimation_coefficient_count": int(
-            max(int(row["estimate_coefficient_count"]) for row in requested_rows)
+        "maximum_estimation_coefficient_count": (
+            int(max(coefficient_counts)) if coefficient_counts else None
         ),
         "minimum_estimation_support_fraction": sorted(
             {
@@ -308,6 +321,10 @@ def _load_site_crop(
 
 def _plot_balance(rows: Sequence[Mapping[str, Any]], output_path: Path) -> None:
     lookup = {(row["method"], row["metric"]): row for row in rows}
+    method_labels = [
+        str(lookup[(method, COMPARISON_METRICS[0][0])]["method_label"])
+        for method in ("profile_only", "pdf_dwt_then_median")
+    ]
     fig, axes = plt.subplots(2, 2, figsize=(10.2, 7.2))
     for axis, (metric, label, _positive, _reverse) in zip(
         axes.ravel(), COMPARISON_METRICS
@@ -339,7 +356,7 @@ def _plot_balance(rows: Sequence[Mapping[str, Any]], output_path: Path) -> None:
         axis.bar_label(positive_bars, padding=2, fontsize=8)
         axis.bar_label(reverse_bars, padding=2, fontsize=8)
         axis.set_title(label)
-        axis.set_xticks(x, ["Profile-only", "PDF-DWT"])
+        axis.set_xticks(x, method_labels)
         axis.set_ylabel("Region count")
         axis.grid(axis="y", alpha=0.25)
         maximum = max(positive + reverse)
@@ -372,7 +389,11 @@ def _plot_balance(rows: Sequence[Mapping[str, Any]], output_path: Path) -> None:
 
 
 def _plot_site_comparison(
-    profile: Mapping[str, Any], pdf: Mapping[str, Any], output_path: Path
+    profile: Mapping[str, Any],
+    pdf: Mapping[str, Any],
+    output_path: Path,
+    *,
+    pdf_label: str = "PDF-DWT",
 ) -> None:
     if profile["epsg"] != pdf["epsg"]:
         raise ValueError("profile and PDF-DWT crops use different EPSG codes")
@@ -388,11 +409,11 @@ def _plot_site_comparison(
     )
     titles = (
         "Profile-only: 1600 nm",
-        "PDF-DWT: 1600 nm",
-        "PDF-DWT − profile: 1600 nm",
+        f"{pdf_label}: 1600 nm",
+        "Change: 1600 nm",
         "Profile-only: 2200–2390 nm",
-        "PDF-DWT: 2200–2390 nm",
-        "PDF-DWT − profile: 2200–2390 nm",
+        f"{pdf_label}: 2200–2390 nm",
+        "Change: 2200–2390 nm",
     )
     fig, axes = plt.subplots(2, 3, figsize=(12.0, 7.6), constrained_layout=True)
     score_image = None
@@ -446,7 +467,8 @@ def _plot_site_comparison(
         difference_image, ax=axes[:, 2], shrink=0.86, label="Local-z difference"
     )
     fig.suptitle(
-        "Keystone site-centred audit: dashed = 21×21 pixels, yellow = z 3 contour"
+        f"Keystone site-centred audit: profile vs {pdf_label}; "
+        "dashed = 21×21 pixels, yellow = z 3 contour"
     )
     fig.savefig(output_path, dpi=190, bbox_inches="tight")
     plt.close(fig)
@@ -529,8 +551,16 @@ def compare(
     ):
         if profile_summary["aggregate"][key] != pdf_summary["aggregate"][key]:
             raise ValueError(f"profile and PDF summaries differ on {key}")
-    if profile_summary["parameters"] != pdf_summary["parameters"]:
-        raise ValueError("profile and PDF summaries use different candidate rules")
+    profile_parameters = dict(profile_summary["parameters"])
+    pdf_parameters = dict(pdf_summary["parameters"])
+    profile_conservative_rule = profile_parameters.pop(
+        "conservative_single_window", None
+    )
+    pdf_conservative_rule = pdf_parameters.pop("conservative_single_window", None)
+    if profile_parameters != pdf_parameters:
+        raise ValueError(
+            "profile and PDF summaries use different core candidate rules"
+        )
     threshold = float(profile_summary["parameters"]["local_z_threshold"])
     minimum_pixels = int(
         profile_summary["parameters"]["minimum_band_threshold_pixels"]
@@ -554,8 +584,20 @@ def compare(
     output_dir.mkdir()
     paths = {name: output_dir / name for name in OUTPUT_NAMES}
 
+    scene_adaptive = (
+        pdf_batch_summary["analysis_config"].get("posthoc_broad_slope_mode")
+        == "per_scene_shared_weak_strong"
+    )
+    pdf_method_label = (
+        "Per-scene slope DWT then median"
+        if scene_adaptive
+        else "PDF-DWT then median"
+    )
+    pdf_figure_label = "Scene-slope DWT" if scene_adaptive else "PDF-DWT"
     rows = build_aggregate_rows(
-        profile_summary["aggregate"], pdf_summary["aggregate"]
+        profile_summary["aggregate"],
+        pdf_summary["aggregate"],
+        pdf_method_label=pdf_method_label,
     )
     with paths["pdf_dwt_aggregate_comparison.csv"].open(
         "w", encoding="utf-8", newline=""
@@ -585,7 +627,10 @@ def compare(
         crop_half_size=crop_half_size,
     )
     _plot_site_comparison(
-        profile_crop, pdf_crop, paths["pdf_dwt_site_window_comparison.png"]
+        profile_crop,
+        pdf_crop,
+        paths["pdf_dwt_site_window_comparison.png"],
+        pdf_label=pdf_figure_label,
     )
     del profile_crop, pdf_crop
     gc.collect()
@@ -612,6 +657,16 @@ def compare(
             "minimum_component_pixels": minimum_pixels,
             "positive_and_sign_reversed_processed_symmetrically": True,
         },
+        "candidate_rule_comparison": {
+            "core_parameters_identical": True,
+            "profile_conservative_single_window": profile_conservative_rule,
+            "pdf_conservative_single_window": pdf_conservative_rule,
+            "conservative_rule_difference": (
+                "stripe-direction exclusion follows each correction branch; "
+                "all other conservative thresholds are identical"
+            ),
+        },
+        "pdf_method_label": pdf_method_label,
         "aggregate_comparison": rows,
         "directional_profile_diagnostics": _profile_diagnostics(posthoc),
         "known_site_comparison": {

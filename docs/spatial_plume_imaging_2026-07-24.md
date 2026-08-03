@@ -2,9 +2,9 @@
 
 実施日: 2026-07-24
 
-> 2026-08-02追記: 本文は200×200 ROIと初期全景解析の履歴的pilotである。後続の
-> QA-strict複数シーン、単帯域screen、PDF記載DWTの感度再解析は
-> [usableシーン単帯域候補報告](single_band_usable_candidates_2026-08-02.md)を参照する。
+> 2026-08-03追記: 本文は200×200 ROIと初期全景解析の履歴的pilotである。後続の
+> QA-strict複数シーン、単帯域screen、および広縞傾きを各シーンで独立推定した
+> PDF記載DWT再解析は、[usableシーン単帯域候補報告の第9節](single_band_usable_candidates_2026-08-02.md#9-広縞傾きをシーンごとに求めたdwt再解析)を参照する。
 
 ## 研究方針
 

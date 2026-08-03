@@ -10,9 +10,9 @@ HISUIハイパースペクトルデータを対象に、1600 nm帯のIterative M
 
 1. 1580–1700 nmからCH₄ unit absorption spectrumを作成
 2. Iterative MFによる1600 nm αマップの推定
-3. QA_DMによる有効画素管理と、補正法ごとに固定した傾きによる方向性ストライプ除去
-   （PDF-DWTの広縞傾きはCTではなく画像から独立推定）
-4. 2200 nm結果に残った細線の追加補正
+3. QA_DMによる有効画素管理と、各L1G製品から独立推定した広縞方向のストライプ除去
+   （PDF-DWTの広縞角はCT方向ではなく、1600/2200 nmで共有する符号付きscene角）
+4. 細縞には固定傾き0.9773461のline-median補正
 5. 1600/2200 nmのrobust z-score融合
 6. 負側tail、空間シフト、既知地表線による偽陽性検査
 
@@ -264,26 +264,35 @@ python scripts/summarize_single_band_candidates.py `
   --site-radius-pixels 10
 ```
 
-提供PDFに記録された、CTとは別に求めた広縞傾き1.2571723でのHaar DWT
-（level 3–5）と、細縞傾き0.9773461でのline-median補正は、元batchを変更しない
-感度解析として次の順で実行します。
+提供PDFに記録された画像方向探索を基に、二帯域の相対RStd減少を平均する監査可能な方法へ
+形式化した。広縞の符号付き傾きを各シーンの未補正MF scoreから独立に探索して
+Haar DWT（level 3–5）を行い、その後に細縞傾き0.9773461で
+line-median補正します。広縞角はシーン内で1600/2200 nmと正負対照に共通です。
+参照シーンの傾き1.2571723（+51.5°）を全シーンへ固定適用しません。
+prominence robust zが5未満、両帯域gainが正でない、または探索端の角度しか得られない
+シーンでは広縞DWTをskipし、低信頼角を候補形状の除外にも使いません。このgateは
+探索的な安全策であり、統計的有意性を与えるものではありません。
 
 ```powershell
 python scripts/postprocess_score_maps_pdf_dwt.py `
   --source-batch outputs/multiscene_l1g_permian_final_v4 `
-  --output-batch outputs/multiscene_l1g_permian_pdf_dwt_v3 `
+  --output-batch outputs/multiscene_l1g_permian_pdf_dwt_scene_slopes_v5 `
   --minimum-threshold-coefficients 300
 
 python scripts/summarize_single_band_candidates.py `
-  --batch-dir outputs/multiscene_l1g_permian_pdf_dwt_v3 `
-  --output-dir outputs/single_band_usable_review_pdf_dwt_v3 `
+  --batch-dir outputs/multiscene_l1g_permian_pdf_dwt_scene_slopes_v5 `
+  --output-dir outputs/single_band_usable_review_pdf_dwt_scene_slopes_v5_final_2026-08-03 `
   --threshold 3 --minimum-pixels 3 `
   --known-site-csv docs/known_sites_hisui.csv `
   --known-site-id keystone_general --site-radius-pixels 10
 ```
 
-完全supportのlevel 5は推定係数が少ないため、`500`へ変更してlevel 5を停止した結果も
-併記します。今回の比較ではPDF-DWTをprimary補正に採用していません。
+選択角はbatch直下の `posthoc_pdf_dwt_scene_slopes.csv`、全角度のscore曲線は
+`posthoc_pdf_dwt_slope_search.csv` で監査できます。完全supportのlevel 5は推定係数が
+少ないため、`500`へ変更してlevel 5を停止した感度解析も必要です。シーン別角にすると、
+選択に使った画像・方向上の記述的な広縞profileは14 scene×band中11で低下しましたが、
+正側 / 逆符号候補比はprofile主解析より改善せず、MODTRAN注入回収も未検証です。このため、
+現時点ではPDF-DWTをprimary補正に採用していません。
 
 出力される全候補、画像確認用shortlist、保守的single-window判定はいずれも探索用です。
 今回の数値、候補ギャラリー、数式、R2への影響は

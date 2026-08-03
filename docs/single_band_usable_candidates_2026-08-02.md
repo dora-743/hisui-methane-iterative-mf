@@ -1,9 +1,11 @@
 # 雲の少ないHISUIシーンに限定した1600 / 2200 nm単帯域候補の整理
 
 作成日: 2026-08-02
+更新日: 2026-08-03（広縞角のシーン別再推定）
 
-第1–7節は従来の固定方向profile補正による主解析、第8節は提供PDFに記録された
-DWT→line-median補正へ置き換えた感度再解析である。両者を独立観測の反復とは数えない。
+第1–7節は従来の固定方向profile補正による主解析、第8節は参照シーンで得た固定角を
+全シーンへ適用した履歴的DWT感度解析、第9節は広縞角をシーンごとに再推定した訂正版である。
+これらを独立観測の反復とは数えない。
 
 ## 結論
 
@@ -23,6 +25,13 @@ DWT→line-median補正へ置き換えた感度再解析である。両者を独
 **2200 nmのみの5領域**となった。
 2200 nmのみで同じ保守条件を通る正側領域は0である。単帯域だけから確実なプルームを主張
 できる結果ではない。
+
+2026-08-03の訂正版では、広縞角を各L1G製品で再推定すると、2021年4製品は
+−40.3–−40.6°、2022年3製品は+51.4–+51.5°となった。選択角で測った記述的な広縞profile
+RStdは14 scene×band中11で低下したが、角度選択と評価は同じ画像に基づき、正側 / 逆符号
+候補比もprofile主解析より一貫して改善しなかった。R2一般位置proxyでは1600 nm側のlocal-zと
+閾値画素数だけが増え、2200 nm支持は0画素のままである。したがってシーン別DWTも探索的な
+感度分岐に留め、メタン検出の主結果は上記profile解析の結論から変更しない。
 
 ![usableシーンの単帯域候補ギャラリー](figures/single_band_usable_candidate_gallery.png)
 
@@ -268,7 +277,7 @@ python scripts/summarize_single_band_candidates.py `
 
 結果は候補screenであり、FDR制御済み検出、plume確認、排出源帰属、排出量推定ではない。
 
-## 8. PDF記載のDWT→median再解析
+## 8. PDF記載のDWT→median再解析（固定角を用いた履歴的解析）
 
 ### 8.1 再解析の位置づけ
 
@@ -476,9 +485,10 @@ R2近傍の弱帯局所高値への感度は上がったが、**2200 nm支持を
 
 ### 8.7 研究上の判断と次の検証
 
-PDFの傾きと処理順を反映しても、広縞profileと逆符号対照は従来法より改善しなかった。
-よってPDF-DWTは**感度解析分岐として保存し、primary pipelineには採用しない**。一方、
-細縞傾き0.977のline medianは独立に有望なので、広縞法と切り分けた検証対象にする。
+この固定角解析だけを見ると、広縞profileと逆符号対照は従来法より改善しなかった。
+ただし、後続の第9節で判明したとおり、広縞角1.2571723（51.5°）は参照シーンの値であり、
+2021年シーンへ固定適用したこと自体が不適切だった。このため、本節の「広縞DWTが無効」
+という判断は一般化せず、固定角適用に対する履歴的な感度結果としてだけ残す。
 
 level 3–5は160–640 mのプルーム尺度と重なる。低振幅プルームは保護maskへ入らない可能性が
 あるため、補正法の採択前に、MODTRAN log-radiance差をMF前の実HISUI放射輝度へ加えるpaired
@@ -525,3 +535,285 @@ python scripts/compare_pdf_dwt_reanalysis.py `
 level 5を停止する感度解析は、最初のコマンドの出力先を別名にし、
 `--minimum-threshold-coefficients 500` として同じ集計へ通す。元のscore mapsは変更せず、
 派生batchのmanifest、script SHA-256、入力hash、scene・band・level別thresholdとsupport数を保存する。
+
+## 9. 広縞傾きをシーンごとに求めたDWT再解析
+
+### 9.1 訂正点と解析単位
+
+広縞の傾きは、**各L1G製品を1シーンとして、シーンごとに独立推定する**よう修正した。
+第8節の $a_b=1.2571723$ は2022-10-30の参照シーンで得た値であり、全期間に共通する
+装置定数ではない。同じシーン内ではストライプの幾何を恣意的に変えないため、推定した
+1本の符号付き傾きを1600 nm・2200 nmの両方、正側・逆符号対照の両方へ共通適用した。
+帯域ごと、候補の符号ごとに最適角を選び直してはいない。
+
+![各シーンで選択した広縞角](figures/scene_slope_estimates.png)
+
+### 9.2 シーン別傾きの推定式
+
+シーンを $s$、吸収帯を $c\in\{1600,2200\}$、未補正MF scoreを $d_{s,c}(p)$ とする。
+候補保護mask $P_s$ は8.2節と同じ正負対称・両帯域共通の定義で、角度探索より前に固定した。
+候補角 $\theta$ ごとに画素を幅18画素の平行線へ割り当てる。
+
+$$
+a(\theta)=\tan\theta,
+\qquad
+k_{s,\theta}(p)=
+\operatorname{round}\!\left(
+\frac{p_y-a(\theta)p_x}{18}
+\right)
+$$
+
+valid maskを $V_s$ とする。各線の一時offsetは、validかつ非保護のsampled画素だけから
+
+$$
+m_{s,c,k}(\theta)=
+\operatorname{median}_{p:\,k_{s,\theta}(p)=k,\,V_s(p)=1,\,P_s(p)=0}
+d_{s,c}(p)
+$$
+
+を求める。sample grid上で20点以上あるline集合を $\mathcal G_s(\theta)$ として、
+
+$$
+o_{s,c,k}(\theta)=
+m_{s,c,k}(\theta)
+-
+\operatorname{median}_{k'\in\mathcal G_s(\theta)}m_{s,c,k'}(\theta),
+\qquad k\in\mathcal G_s(\theta)
+$$
+
+とした。support不足lineは探索score計算ではoffset 0とする。
+$\operatorname{RStd}(x)=1.4826\operatorname{median}|x-\operatorname{median}(x)|$
+（0なら通常の標準偏差へfallback）として、帯域別scoreを
+
+$$
+g_{s,c}(\theta)=
+\frac{
+\operatorname{RStd}(d_{s,c})-
+\operatorname{RStd}\!\left(
+d_{s,c}(p)-o_{s,c,k_{s,\theta}(p)}(\theta)
+\right)
+}{
+\operatorname{RStd}(d_{s,c})
+}
+$$
+
+で定義した。これは、その角度のline-medianを仮に引いたときrobust dispersionが何割減るかを
+表す。式中のRStdもvalidかつ非保護のsampled画素上で評価する。弱帯・強帯のscore scale差が
+選択を支配しないよう、絶対減少量ではなく相対減少率を平均した。
+
+$$
+g_s(\theta)=\frac{g_{s,1600}(\theta)+g_{s,2200}(\theta)}{2}
+$$
+
+正角・負角の枝ごとに8°幅のrolling median $M_8[g_s](\theta)$ を求め、局所prominenceを
+
+$$
+q_s(\theta)=g_s(\theta)-M_8[g_s](\theta)
+$$
+
+とした。探索端1°を除き、$\pm1^\circ$ 近傍で局所最大となる正の $q_s$ のうち最大を暫定角
+$\widehat\theta_s$ とする。細縞方向 $+44.3436^\circ$ の前後1.5°は、同じ構造を広縞として
+二重選択しないため除外した。さらに、許容角全体でのprominenceのrobust scaleを使い、
+
+$$
+Z_{q,s}=\frac{q_s(\widehat\theta_s)}{\operatorname{RStd}_{\theta}[q_s(\theta)]}
+$$
+
+を計算した。正の局所peak、joint gainと両帯域gainが正、support lineあり、探索端でない、
+$Z_{q,s}\ge5$ をすべて満たす場合だけ `supported` とし、それ以外では広縞DWTをskipする。
+これは無縞ノイズへ常にDWTをかけないための暫定的な安全gateであり、校正済みp値ではない。
+
+実装設定は次のとおりである。
+
+| 項目 | 設定 |
+|---|---:|
+| 符号付き角度探索 | $-80$–$-10^\circ$, $+10$–$+80^\circ$ |
+| 角度step | $0.1^\circ$ |
+| line幅 | 18画素 |
+| 画像sample step | 4画素 |
+| 1 lineの最小support | sampled gridで20点（設定値80をsample step 4で除した実装） |
+| angular trend窓 | 8° |
+| local-peak窓 | $\pm1^\circ$ |
+| 探索端除外 | 1° |
+| 細縞方向除外 | $44.3436\pm1.5^\circ$ |
+| 暫定no-stripe gate | prominence robust z $\ge5$、両帯域gain $>0$ |
+
+全角度のraw score、rolling trend、prominence、選択フラグはシーン別CSVとbatch統合CSVへ
+保存した。検索曲線を図示すると、2021年と2022年で異なる符号の山が選ばれている。ただし、
+約1,400候補角から同じ画像上の最大prominenceを選ぶため、$Z_{q,s}\ge5$ もlook-elsewhereを
+補正した有意閾値ではない。第1 / 第2 prominence比も信頼区間ではない。
+
+![シーン別広縞角の探索曲線](figures/scene_slope_score_curves.png)
+
+### 9.3 推定された傾き
+
+| 観測日 | 製品タイル | 選択角 $\widehat\theta_s$ | 傾き $\tan\widehat\theta_s$ | joint相対RStd減少 | 1600 / 2200 nm個別peak角 | 第1 / 第2 prominence |
+|---|---|---:|---:|---:|---:|---:|
+| 2021-06-07 | N320W1032 | −40.6° | −0.8571 | 3.23% | −40.6° / +42.1° | 1.46 |
+| 2021-06-07 | N322W1030 | −40.4° | −0.8511 | 4.22% | −40.4° / +41.9° | 1.94 |
+| 2021-06-11 | N320W1033 | −40.3° | −0.8481 | 3.94% | −40.3° / +42.1° | 1.36 |
+| 2021-06-11 | N322W1031 | −40.4° | −0.8511 | 3.93% | −40.5° / −46.2° | 1.02 |
+| 2022-10-30 | N318W1030 | +51.4° | +1.2527 | 3.35% | +51.4° / +51.6° | 5.13 |
+| 2022-10-30 | N320W1032 | +51.4° | +1.2527 | 4.05% | +51.4° / +51.4° | 4.87 |
+| 2022-10-30 | N322W1034 | +51.5° | +1.2572 | 3.26% | +51.5° / +51.4° | 6.66 |
+
+各製品を独立に探索したにもかかわらず、同一観測内のrangeは2021-06-07で0.2°、
+2021-06-11で0.1°、2022-10-30で0.1°だった。共通する観測時の縞幾何を拾った可能性を
+支持するが、隣接tileに共通する地表・処理構造の影響もあり、独立な証明ではない。一方、
+2021年は第1 / 第2 prominence比が1.02–1.94と低く、1600 / 2200 nm個別peak角は全4製品で
+一致しない。3製品は反対符号で82.3–82.7°離れ、残る1製品も5.7°差だった。したがって
+2021年角には大きな不確かさがあり、joint角は「確定値」でなく探索を安定化する暫定値とする。
+今回の7製品は $Z_{q,s}=14.5$–$35.4$ で暫定gateをすべて通り、選択角と第9.4–9.6節の数値は
+gate追加前から変わらなかった。
+
+### 9.4 シーン別角でのDWT結果
+
+選択した $\widehat\theta_s$ で8.3節と同じsupport-aware Haar DWT level 3–5を行い、
+その後に細縞傾き0.9773461のline medianを適用した。候補領域の
+`shape_stripe_direction_flag` も、固定51.5°ではなく、その領域へ寄与し、かつ `supported` と
+なった各シーンの $\widehat\theta_s$ と細縞方向だけに対して判定するよう更新した。CSVには
+最も近い方向、角度差、製品ID、slope statusを保存する。
+
+従来profile補正画像と比較した方向profile RStdは次のとおりである。
+
+| DWTの広縞角 | 広縞profile 低下 / 増加（14 scene×band） | 広縞RStd相対変化中央値 | 細縞profile 低下 / 増加 | 細縞RStd相対変化中央値 |
+|---|---:|---:|---:|---:|
+| 固定 +51.5° | 3 / 11 | +22.7% | 12 / 2 | −14.0% |
+| シーン別符号付き角 | **11 / 3** | **−46.0%** | **13 / 1** | **−14.3%** |
+
+固定+51.5°とシーン別角ではprofileを測る方向自体も異なるため、上表の効果量は完全に同じ
+指標の直接比較ではない。それでも固定角で2021年へ異符号かつほぼ直交する方向を流用した
+ことが、第8節の広縞profile増加に少なくとも一部寄与したと考えられる。
+
+年別に見ると、選択角で評価した記述的RStdは2021年で8/8低下（中央値−53.6%）した一方、
+2022年は3/6低下・3/6増加（中央値−6.0%）だった。全体の−46.0%は、不確実性の大きい2021年
+角に強く駆動されている。角度選択とprofile評価は同じraw MF画像と類似したline統計を使う
+in-sample評価なので、選択バイアスを含みうる。held-out検証前には、artifact除去性能が
+独立に改善したとはみなさない。
+
+### 9.5 正側と逆符号対照の比較
+
+候補抽出条件を変えず、profile主解析、固定角DWT、シーン別角DWTを比較した。
+
+| 指標 | profile補正 正 / 逆（比） | 固定角DWT 正 / 逆（比） | シーン別角DWT 正 / 逆（比） |
+|---|---:|---:|---:|
+| 全OR領域 | 1,847 / 2,199（0.840） | 1,835 / 2,252（0.815） | 1,832 / 2,202（0.832） |
+| shortlist | 243 / 287（0.847） | 285 / 325（0.877） | 292 / 332（0.880） |
+| 保守的single-window | 2 / 5（0.400） | 1 / 10（0.100） | 1 / 6（0.167） |
+| strict-dual | 73 / 25（2.920） | 87 / 28（3.107） | 93 / 32（2.906） |
+
+![正側と逆符号対照の候補数比較](figures/scene_adaptive_candidate_balance.png)
+
+$z$閾値、面積、peak、雲・無効境界、形状閾値は3分岐で同一だが、保守的single-windowだけは
+stripe方向除外が各補正分岐に追従する。profileは従来固定方向、シーン別DWTは `supported` な
+scene角を使うため、この1行は完全に同一の方向ruleではない。
+
+シーン別角では、固定角より保守的な逆符号候補が10から6へ減った。profile主解析との比較では、
+shortlist比は0.847から0.880へ1に近づいたが、全ORは0.840から0.832、保守候補は0.400から
+0.167へ下がり、一貫した変化ではない。strict-dual比2.906もprofileの2.920と実質同じである。
+正 / 逆比が1へ近づくこと自体はnull balanceの記述であり、感度やFDRの改善を意味しない。
+
+成分数に現れないtail画素は両符号で増えた。profileからシーン別DWTへの変化は、1600 nmで
+正側18,563→20,615（+11.1%）、逆側21,653→23,610（+9.0%）、2200 nmで正側
+27,485→29,348（+6.8%）、逆側25,059→25,979（+3.7%）だった。shortlistは正+20.2%・
+逆+15.7%、strict-dualは正+27.4%・逆+28.0%である。取得別の全OR正 / 逆比は
+2021-06-07で0.466→0.507、2021-06-11で0.600→0.625、2022-10-30で1.276→1.175と
+いずれも1へ近づく一方、3取得を混ぜたaggregate比は0.840→0.832だった。取得が3回だけなので、
+この集約差から性能を結論しない。**選択方向のRStd低下とメタン候補識別は別の評価軸**である。
+
+シーン別角DWT後に保守条件を通った正側は、2022-10-30のE=683900 m、N=3523280 mにある
+`1600_only` 1領域だけで、profile解析と固定角解析にも残っていた場所である。新しい独立証拠
+ではない。再選択した全候補のgalleryにも線状構造が残るため、peak画像だけでplumeと判定しない。
+
+![シーン別角DWT後の候補ギャラリー](figures/single_band_usable_candidate_gallery_scene_slopes_v5.png)
+
+### 9.6 R2一般位置proxy
+
+2022-10-30の21×21画素監査窓を同じ地上座標で比較した。
+
+| 指標 | profile補正 | 固定角DWT | シーン別角DWT |
+|---|---:|---:|---:|
+| 1600 nm $z\ge3$ | 1画素 | 5画素 | 4画素 |
+| 1600 nm peak | 3.646 | 3.965 | 4.244 |
+| 2200–2390 nm $z\ge3$ | 0画素 | 0画素 | 0画素 |
+| 2200–2390 nm peak | 2.574 | 2.568 | 2.664 |
+| dual peak | 1.955 | 2.002 | 2.292 |
+| 最近傍1600 nm retained成分まで | 1.18 km | 189 m | 189 m |
+
+![R2一般位置proxy周辺のprofile補正とシーン別角DWT比較](figures/scene_adaptive_site_window_comparison.png)
+
+シーン別角DWTでsite proxyに最も近い保持成分は、peak位置が約215 m離れた3画素の
+`1600_only` 成分で、bboxは2×2画素、peak 4.244、2200 nm counterpart peak 0.844、
+counterpart中央値0.806だった。shortlistにも保守条件にも入らない。R2近傍では弱帯local-zと
+閾値画素数が増えたが、2200 nm支持がなく、メタン濃度上昇の再検出とは扱えない。同じ2022年
+画像に対する前処理差であり、独立検証でもない。またこの21×21画素は
+Keystone Gas Plantの一般位置proxyを中心とする監査窓であり、過去解析の固定R2境界そのものではない。
+
+### 9.7 現時点の研究判断
+
+今後のDWT感度解析では、固定51.5°の全シーン適用よりシーン別角を暫定標準とし、第8節は
+比較履歴としてだけ残す。ただし角度推定自体がheld-out検証されておらず、シーン別DWTを
+primary methane detectorへ置き換える根拠はまだない。理由は次のとおりである。
+
+- 正側 / 逆符号対照の候補比がprofile主解析より一貫して改善していない。
+- 暫定no-stripe gateは独立Gaussian noiseの単体試験を除外するが、約1,400角探索に対する
+  max-statisticや空間相関を校正しておらず、統計的な有意判定ではない。
+- selected角でHaar水平detailの水平 / 垂直RStd比の点推定は、1600 nmではlevel 3–5すべてで1を超えたが、2200 nmの
+  level 4は7シーン中6シーンで水平 / 垂直RStd比が1未満（0.901–0.982）であり、
+  band×level別の適用gateが必要である。
+- level 5の完全support係数は311–395個（128 bin当たり2.43–3.09個）で、閾値のbootstrap
+  安定性をまだ確認していない。
+- 実HISUI背景へMODTRANプルームを注入したpaired試験を、シーン別角推定を含むfull pipelineで
+  まだ実施していない。
+
+次の主実験は、同一取得の隣接tileを使ったleave-one-tile-out、block bootstrap、全角度の
+max-statistic、候補保護maskの有無、sample-gridの4位相で角度安定性とno-stripe閾値を先に
+決めることである。その後、band×levelごとに水平 / 垂直detailの方向性が事前閾値を超えた
+場合だけDWTを適用し、同じ経験的false-positive rateでのMODTRAN注入回収率、振幅保持、
+重心・形状誤差をprofile補正と比較する。これを通るまでは、シーン別DWTは
+**探索的な感度解析分岐**、profile補正を主解析とする。
+
+### 9.8 再現方法
+
+```powershell
+python scripts/postprocess_score_maps_pdf_dwt.py `
+  --source-batch outputs/multiscene_l1g_permian_final_v4 `
+  --output-batch outputs/multiscene_l1g_permian_pdf_dwt_scene_slopes_v5 `
+  --minimum-threshold-coefficients 300
+
+python scripts/summarize_single_band_candidates.py `
+  --batch-dir outputs/multiscene_l1g_permian_pdf_dwt_scene_slopes_v5 `
+  --output-dir outputs/single_band_usable_review_pdf_dwt_scene_slopes_v5_final_2026-08-03 `
+  --threshold 3 --minimum-pixels 3 --gallery-per-support 1 `
+  --known-site-csv docs/known_sites_hisui.csv `
+  --known-site-id keystone_general --site-radius-pixels 10
+
+python scripts/compare_pdf_dwt_reanalysis.py `
+  --profile-summary outputs/single_band_usable_review_2026-08-02/single_band_summary.json `
+  --pdf-summary outputs/single_band_usable_review_pdf_dwt_scene_slopes_v5_final_2026-08-03/single_band_summary.json `
+  --profile-batch outputs/multiscene_l1g_permian_final_v4 `
+  --pdf-batch outputs/multiscene_l1g_permian_pdf_dwt_scene_slopes_v5 `
+  --posthoc-summary outputs/multiscene_l1g_permian_pdf_dwt_scene_slopes_v5/posthoc_pdf_dwt_summary.json `
+  --known-site-csv docs/known_sites_hisui.csv `
+  --known-site-id keystone_general `
+  --output-dir outputs/pdf_dwt_scene_slope_reanalysis_v5_final_2026-08-03
+
+python scripts/plot_scene_slope_reanalysis.py `
+  --adaptive-batch outputs/multiscene_l1g_permian_pdf_dwt_scene_slopes_v5 `
+  --profile-summary outputs/single_band_usable_review_2026-08-02/single_band_summary.json `
+  --fixed-summary outputs/single_band_usable_review_pdf_dwt_v3_2026-08-02/single_band_summary.json `
+  --adaptive-summary outputs/single_band_usable_review_pdf_dwt_scene_slopes_v5_final_2026-08-03/single_band_summary.json `
+  --output-dir docs/figures
+
+Copy-Item `
+  outputs/pdf_dwt_scene_slope_reanalysis_v5_final_2026-08-03/pdf_dwt_site_window_comparison.png `
+  docs/figures/scene_adaptive_site_window_comparison.png
+
+Copy-Item `
+  outputs/single_band_usable_review_pdf_dwt_scene_slopes_v5_final_2026-08-03/single_band_candidate_gallery.png `
+  docs/figures/single_band_usable_candidate_gallery_scene_slopes_v5.png
+```
+
+batch直下の `posthoc_pdf_dwt_scene_slopes.csv` が選択角の監査表、
+`posthoc_pdf_dwt_slope_search.csv` が全シーン・全候補角のscore表である。各シーンdirectoryにも
+`broad_slope_search.csv` を残し、再解析時に傾きが暗黙の固定値へ戻らないようにした。

@@ -16,10 +16,15 @@ from directional_destriping import (  # noqa: E402
     support_aware_wavelet_horizontal_destripe,
 )
 from postprocess_score_maps_pdf_dwt import (  # noqa: E402
+    _process_band,
     derive_batch,
     fast_fixed_slope_median_destripe,
     safe_rotation_canvas,
     symmetric_protection_mask,
+)
+from scene_stripe_slope import (  # noqa: E402
+    SceneSlopeSearchConfig,
+    estimate_scene_broad_slope,
 )
 from compare_pdf_dwt_reanalysis import build_aggregate_rows  # noqa: E402
 
@@ -29,6 +34,131 @@ PDF_ROTATION_DEGREES = math.degrees(math.atan(PDF_BROAD_SLOPE))
 
 
 class PDFDWTReanalysisTests(unittest.TestCase):
+    @staticmethod
+    def _synthetic_slope_config() -> SceneSlopeSearchConfig:
+        return SceneSlopeSearchConfig(
+            angle_min_deg=35.0,
+            angle_max_deg=60.0,
+            angle_step_deg=0.5,
+            search_negative_slopes=True,
+            line_bin_width_pixels=12.0,
+            minimum_pixels_per_line=12,
+            sample_step=1,
+            trend_window_deg=6.0,
+            local_window_deg=1.0,
+            edge_exclusion_deg=1.0,
+            excluded_angles_deg=(44.3,),
+            excluded_half_width_deg=1.0,
+        )
+
+    def test_scene_slope_estimator_recovers_signed_shared_geometry(self) -> None:
+        height, width = 128, 120
+        rows, columns = np.indices((height, width))
+        true_angle = -40.5
+        true_slope = math.tan(math.radians(true_angle))
+        coordinate = rows - true_slope * columns
+        stripe = np.sin(2.0 * np.pi * coordinate / 24.0)
+        stripe += 0.4 * np.sin(2.0 * np.pi * coordinate / 48.0)
+        plume = 7.0 * np.exp(
+            -((rows - 62.0) ** 2 + (columns - 58.0) ** 2) / (2.0 * 3.0**2)
+        )
+        valid = np.ones((height, width), dtype=bool)
+        valid[:5, :] = False
+        valid[:, :4] = False
+        protected = plume > 0.5
+        diagnostics, curve = estimate_scene_broad_slope(
+            {
+                "weak": stripe + plume,
+                "strong": 0.55 * stripe + 0.8 * plume,
+            },
+            valid,
+            protected,
+            config=self._synthetic_slope_config(),
+        )
+        self.assertAlmostEqual(
+            diagnostics["selected_angle_deg"], true_angle, delta=3.0
+        )
+        self.assertEqual(diagnostics["slope_status"], "supported")
+        self.assertEqual(len([row for row in curve if row["selected"]]), 1)
+        self.assertGreater(diagnostics["selected_joint_fractional_gain"], 0.2)
+
+    def test_scene_slope_estimator_rejects_noise_peak(self) -> None:
+        generator = np.random.default_rng(12345)
+        shape = (128, 120)
+        diagnostics, curve = estimate_scene_broad_slope(
+            {
+                "weak": generator.normal(size=shape),
+                "strong": generator.normal(size=shape),
+            },
+            np.ones(shape, dtype=bool),
+            np.zeros(shape, dtype=bool),
+            config=self._synthetic_slope_config(),
+        )
+        self.assertEqual(diagnostics["slope_status"], "unsupported")
+        self.assertIn(
+            "peak_below_robust_z_gate", diagnostics["slope_support_failures"]
+        )
+        self.assertEqual(sum(row["selected"] for row in curve), 1)
+        self.assertEqual(sum(row["slope_supported"] for row in curve), 0)
+
+    def test_unsupported_scene_slope_skips_broad_dwt(self) -> None:
+        rows, columns = np.indices((48, 44))
+        raw = np.sin(2.0 * np.pi * (rows + columns) / 17.0)
+        valid = np.ones(raw.shape, dtype=bool)
+        corrected, local, diagnostics = _process_band(
+            raw,
+            raw,
+            None,
+            valid,
+            np.zeros(raw.shape, dtype=bool),
+            local_sigma_pixels=3.0,
+            canvas_size=64,
+            band_name="synthetic",
+            minimum_threshold_coefficients=1,
+            broad_slope=1.0,
+            broad_rotation_degrees=45.0,
+            apply_broad_dwt=False,
+        )
+        self.assertFalse(diagnostics["broad_dwt_applied"])
+        self.assertTrue(
+            all(
+                row["status"] == "skipped_unsupported_scene_slope"
+                and not row["requested"]
+                for row in diagnostics["dwt"]
+            )
+        )
+        self.assertEqual(corrected.shape, raw.shape)
+        self.assertTrue(np.all(np.isfinite(local[valid])))
+
+    def test_scene_slope_estimator_is_sign_scale_and_band_order_invariant(self) -> None:
+        rows, columns = np.indices((112, 104))
+        angle = 52.0
+        slope = math.tan(math.radians(angle))
+        coordinate = rows - slope * columns
+        weak = np.sin(2.0 * np.pi * coordinate / 24.0)
+        strong = 0.6 * np.sin(2.0 * np.pi * coordinate / 48.0)
+        valid = np.ones(weak.shape, dtype=bool)
+        protected = np.zeros(weak.shape, dtype=bool)
+        config = self._synthetic_slope_config()
+        first, first_curve = estimate_scene_broad_slope(
+            {"weak": weak, "strong": strong},
+            valid,
+            protected,
+            config=config,
+        )
+        transformed, transformed_curve = estimate_scene_broad_slope(
+            {"strong": -7.0 * strong, "weak": -3.0 * weak},
+            valid,
+            protected,
+            config=config,
+        )
+        self.assertEqual(first["selected_angle_deg"], transformed["selected_angle_deg"])
+        np.testing.assert_allclose(
+            [row["joint_fractional_gain"] for row in first_curve],
+            [row["joint_fractional_gain"] for row in transformed_curve],
+            atol=1e-12,
+        )
+
     def test_aggregate_comparison_keeps_positive_and_reverse_paired(self) -> None:
         profile = {
             "positive_region_count": 10,
@@ -273,11 +403,30 @@ class PDFDWTReanalysisTests(unittest.TestCase):
             )
             source_hash = (scene / "score_maps.npz").read_bytes()
             result = derive_batch(
-                source, output, minimum_threshold_coefficients=1
+                source,
+                output,
+                minimum_threshold_coefficients=1,
+                slope_search_config=SceneSlopeSearchConfig(
+                    angle_min_deg=45.0,
+                    angle_max_deg=60.0,
+                    angle_step_deg=1.0,
+                    search_negative_slopes=False,
+                    line_bin_width_pixels=12.0,
+                    minimum_pixels_per_line=8,
+                    sample_step=1,
+                    trend_window_deg=6.0,
+                    local_window_deg=1.0,
+                    edge_exclusion_deg=1.0,
+                    minimum_peak_robust_z=0.5,
+                    excluded_angles_deg=(),
+                    excluded_half_width_deg=0.0,
+                ),
             )
             self.assertEqual(result["usable_scene_count"], 1)
             self.assertTrue((output / "run_manifest.json").is_file())
             self.assertTrue((output / "posthoc_pdf_dwt_scene_metrics.csv").is_file())
+            self.assertTrue((output / "posthoc_pdf_dwt_scene_slopes.csv").is_file())
+            self.assertTrue((output / "posthoc_pdf_dwt_slope_search.csv").is_file())
             self.assertFalse(
                 (output.parent / f".{output.name}.lock").exists()
             )
@@ -298,6 +447,27 @@ class PDFDWTReanalysisTests(unittest.TestCase):
                 ],
                 1,
             )
+            self.assertEqual(
+                batch_summary["analysis_config"]["posthoc_broad_slope_mode"],
+                "per_scene_shared_weak_strong",
+            )
+            posthoc = json.loads(
+                (output / "posthoc_pdf_dwt_summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertIn("scene_stripe_slope_sha256", posthoc)
+            self.assertIn("audit_output_sha256", posthoc)
+            scene_diagnostic = posthoc["scene_diagnostics"][0]
+            self.assertEqual(
+                scene_diagnostic["weak"]["scene_broad_rotation_degrees"],
+                scene_diagnostic["strong"]["scene_broad_rotation_degrees"],
+            )
+            self.assertEqual(
+                scene_diagnostic["weak"]["broad_dwt_applied"],
+                scene_diagnostic["strong"]["broad_dwt_applied"],
+            )
+            self.assertTrue(scene_diagnostic["weak"]["broad_dwt_applied"])
             with np.load(output / product_id / "score_maps.npz") as archive:
                 self.assertEqual(archive["weak_local_z"].shape, weak.shape)
                 self.assertTrue(np.all(np.isfinite(archive["weak_local_z"])))

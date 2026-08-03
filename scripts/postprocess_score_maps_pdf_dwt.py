@@ -5,8 +5,8 @@ The source batch is never modified.  For each ``quality_class=usable`` product,
 the script starts from the saved, pre-destriping ``weak_z`` and ``strong_z``
 maps and applies the workflow documented in the July 3 slides:
 
-1. support-aware Haar DWT at the independently detected broad-stripe slope
-   1.2571722989 (levels 3--5), then
+1. estimate one broad-stripe slope for that scene from the shared weak/strong
+   RStd-reduction score, then apply support-aware Haar DWT (levels 3--5), and
 2. fixed-slope line-median subtraction at the thin QA trace slope
    0.9773460526.
 
@@ -45,11 +45,18 @@ from directional_destriping import (
     support_aware_wavelet_horizontal_destripe,
 )
 from screen_hisui_l1g_scenes import weighted_local_z
+from scene_stripe_slope import (
+    SceneSlopeSearchConfig,
+    estimate_scene_broad_slope,
+    write_slope_search_csv,
+)
 
 
-ANALYSIS_VERSION = "2026-08-02-pdf-dwt-v3"
-BROAD_SLOPE = 1.257172298918948
-BROAD_ROTATION_DEGREES = math.degrees(math.atan(BROAD_SLOPE))
+ANALYSIS_VERSION = "2026-08-03-pdf-dwt-scene-slope-v5"
+REFERENCE_BROAD_SLOPE = 1.257172298918948
+REFERENCE_BROAD_ROTATION_DEGREES = math.degrees(
+    math.atan(REFERENCE_BROAD_SLOPE)
+)
 THIN_SLOPE = 0.9773460526106752
 THIN_BIN_WIDTH = 2.0
 DWT_LEVELS = (3, 4, 5)
@@ -296,25 +303,57 @@ def _process_band(
     canvas_size: int,
     band_name: str,
     minimum_threshold_coefficients: int,
+    broad_slope: float,
+    broad_rotation_degrees: float,
+    apply_broad_dwt: bool,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    dwt_corrected, dwt_stripe, dwt_rows = (
-        support_aware_wavelet_horizontal_destripe(
-            raw,
-            valid,
-            protected,
-            slope=BROAD_SLOPE,
-            rotation_angle_deg=BROAD_ROTATION_DEGREES,
-            levels_to_filter=DWT_LEVELS,
-            max_level=DWT_MAX_LEVEL,
-            threshold_scale=DWT_THRESHOLD_SCALE,
-            diff_fraction=DWT_DIFF_FRACTION,
-            canvas_size=canvas_size,
-            minimum_support_fraction=DWT_MINIMUM_SUPPORT,
-            minimum_estimation_support_fraction=DWT_MINIMUM_ESTIMATION_SUPPORT,
-            minimum_threshold_coefficients=minimum_threshold_coefficients,
-            operation_name=f"{band_name}:pdf_broad_dwt",
+    if apply_broad_dwt:
+        dwt_corrected, dwt_stripe, dwt_rows = (
+            support_aware_wavelet_horizontal_destripe(
+                raw,
+                valid,
+                protected,
+                slope=broad_slope,
+                rotation_angle_deg=broad_rotation_degrees,
+                levels_to_filter=DWT_LEVELS,
+                max_level=DWT_MAX_LEVEL,
+                threshold_scale=DWT_THRESHOLD_SCALE,
+                diff_fraction=DWT_DIFF_FRACTION,
+                canvas_size=canvas_size,
+                minimum_support_fraction=DWT_MINIMUM_SUPPORT,
+                minimum_estimation_support_fraction=DWT_MINIMUM_ESTIMATION_SUPPORT,
+                minimum_threshold_coefficients=minimum_threshold_coefficients,
+                operation_name=f"{band_name}:pdf_broad_dwt",
+            )
         )
-    )
+    else:
+        dwt_corrected = np.asarray(raw, dtype=float).copy()
+        dwt_stripe = np.zeros(raw.shape, dtype=float)
+        dwt_rows = [
+            {
+                "operation": f"{band_name}:pdf_broad_dwt",
+                "slope": float(broad_slope),
+                "rotation_angle_deg": float(broad_rotation_degrees),
+                "level": level,
+                "requested": 0,
+                "filtered": 0,
+                "status": "skipped_unsupported_scene_slope",
+                "raw_threshold": 0.0,
+                "applied_threshold": 0.0,
+                "estimate_coefficient_count": 0,
+                "apply_coefficient_count": 0,
+                "total_coefficient_count": 0,
+                "minimum_application_support_fraction": DWT_MINIMUM_SUPPORT,
+                "minimum_estimation_support_fraction": (
+                    DWT_MINIMUM_ESTIMATION_SUPPORT
+                ),
+                "horizontal_robust_std_supported": None,
+                "vertical_robust_std_supported": None,
+                "horizontal_energy_supported": None,
+                "vertical_energy_supported": None,
+            }
+            for level in range(1, DWT_MAX_LEVEL + 1)
+        ]
     thin_exclusion = ndimage.binary_dilation(protected, iterations=1) & valid
     corrected, thin_stripe, thin_diagnostics = fast_fixed_slope_median_destripe(
         dwt_corrected,
@@ -340,7 +379,7 @@ def _process_band(
         else None,
         "pdf_broad_profile_rstd": _profile_rstd(
             corrected,
-            slope=BROAD_SLOPE,
+            slope=broad_slope,
             bin_width=18.0,
             protected_mask=protected,
         ),
@@ -356,7 +395,7 @@ def _process_band(
             {
                 "source_broad_profile_rstd": _profile_rstd(
                     old_corrected,
-                    slope=BROAD_SLOPE,
+                    slope=broad_slope,
                     bin_width=18.0,
                     protected_mask=protected,
                 ),
@@ -369,6 +408,9 @@ def _process_band(
             }
         )
     diagnostics = {
+        "scene_broad_slope": float(broad_slope),
+        "scene_broad_rotation_degrees": float(broad_rotation_degrees),
+        "broad_dwt_applied": bool(apply_broad_dwt),
         "dwt": dwt_rows,
         "thin_median": thin_diagnostics,
         "comparison": comparison,
@@ -413,6 +455,7 @@ def derive_batch(
     output_batch: Path,
     *,
     minimum_threshold_coefficients: int = DWT_MINIMUM_COEFFICIENTS,
+    slope_search_config: SceneSlopeSearchConfig | None = None,
 ) -> dict[str, Any]:
     source_batch = source_batch.expanduser().resolve()
     output_batch = output_batch.expanduser().resolve()
@@ -420,6 +463,8 @@ def derive_batch(
         raise ValueError("output batch must not be located inside the source batch")
     if minimum_threshold_coefficients < 1:
         raise ValueError("minimum_threshold_coefficients must be positive")
+    search_config = slope_search_config or SceneSlopeSearchConfig()
+    search_config.validate()
     output_batch.parent.mkdir(parents=True, exist_ok=True)
     with _exclusive_output_lock(output_batch):
         if output_batch.exists():
@@ -428,6 +473,7 @@ def derive_batch(
             source_batch,
             output_batch,
             minimum_threshold_coefficients=minimum_threshold_coefficients,
+            slope_search_config=search_config,
         )
 
 
@@ -436,6 +482,7 @@ def _derive_batch_locked(
     output_batch: Path,
     *,
     minimum_threshold_coefficients: int,
+    slope_search_config: SceneSlopeSearchConfig,
 ) -> dict[str, Any]:
     temporary = output_batch.with_name(
         f".{output_batch.name}.tmp-{uuid.uuid4().hex}"
@@ -456,8 +503,12 @@ def _derive_batch_locked(
                 "posthoc_score_correction": "pdf_broad_dwt_then_thin_median",
                 "posthoc_analysis_version": ANALYSIS_VERSION,
                 "posthoc_input_score_keys": ["weak_z", "strong_z"],
-                "posthoc_broad_slope": BROAD_SLOPE,
-                "posthoc_broad_rotation_degrees": BROAD_ROTATION_DEGREES,
+                "posthoc_broad_slope_mode": "per_scene_shared_weak_strong",
+                "posthoc_broad_slope_search": slope_search_config.to_dict(),
+                "posthoc_reference_broad_slope": REFERENCE_BROAD_SLOPE,
+                "posthoc_reference_broad_rotation_degrees": (
+                    REFERENCE_BROAD_ROTATION_DEGREES
+                ),
                 "posthoc_dwt_levels": list(DWT_LEVELS),
                 "posthoc_dwt_threshold_scale": DWT_THRESHOLD_SCALE,
                 "posthoc_dwt_diff_fraction": DWT_DIFF_FRACTION,
@@ -474,6 +525,7 @@ def _derive_batch_locked(
             }
         )
         script_path = Path(__file__).resolve()
+        slope_script_path = Path(__file__).with_name("scene_stripe_slope.py")
         provenance = {
             "analysis_version": ANALYSIS_VERSION,
             "source_batch": str(source_batch),
@@ -483,16 +535,23 @@ def _derive_batch_locked(
             ),
             "script_path": str(script_path),
             "script_sha256": _sha256(script_path),
+            "scene_stripe_slope_path": str(slope_script_path),
+            "scene_stripe_slope_sha256": _sha256(slope_script_path),
             "directional_destriping_sha256": _sha256(
                 Path(__file__).with_name("directional_destriping.py")
+            ),
+            "screen_hisui_l1g_scenes_sha256": _sha256(
+                Path(__file__).with_name("screen_hisui_l1g_scenes.py")
             ),
             "python_version": platform.python_version(),
             "numpy_version": np.__version__,
             "scipy_version": scipy.__version__,
             "minimum_threshold_coefficients": minimum_threshold_coefficients,
+            "slope_search_config": slope_search_config.to_dict(),
             "started_utc": started,
         }
         scene_diagnostics: list[dict[str, Any]] = []
+        all_slope_search_rows: list[dict[str, Any]] = []
         observed_quality: dict[str, int] = {}
         for product_id in product_ids:
             source_scene = source_batch / product_id
@@ -583,9 +642,35 @@ def _derive_batch_locked(
                     valid,
                     local_sigma_pixels=local_sigma,
                 )
+                slope_diagnostics, slope_rows = estimate_scene_broad_slope(
+                    {
+                        "weak": weak_raw,
+                        "strong": strong_raw,
+                    },
+                    valid,
+                    protected,
+                    config=slope_search_config,
+                )
+                scene_slope_rows = [
+                    {"product_id": product_id, **row} for row in slope_rows
+                ]
+                write_slope_search_csv(
+                    scene_slope_rows,
+                    derived_scene / "broad_slope_search.csv",
+                )
+                all_slope_search_rows.extend(scene_slope_rows)
+                broad_slope = float(
+                    slope_diagnostics["selected_slope_row_per_column"]
+                )
+                broad_rotation_degrees = float(
+                    slope_diagnostics["selected_angle_deg"]
+                )
+                apply_broad_dwt = (
+                    slope_diagnostics.get("slope_status") == "supported"
+                )
                 canvas = safe_rotation_canvas(
                     valid.shape,
-                    angle_degrees=BROAD_ROTATION_DEGREES,
+                    angle_degrees=broad_rotation_degrees,
                     divisor=2**DWT_MAX_LEVEL,
                 )
                 scene_started = time.perf_counter()
@@ -599,6 +684,9 @@ def _derive_batch_locked(
                     canvas_size=canvas,
                     band_name="weak_1580_1750_nm",
                     minimum_threshold_coefficients=minimum_threshold_coefficients,
+                    broad_slope=broad_slope,
+                    broad_rotation_degrees=broad_rotation_degrees,
+                    apply_broad_dwt=apply_broad_dwt,
                 )
                 strong_corrected, strong_local, strong_diagnostics = _process_band(
                     strong_raw,
@@ -610,6 +698,9 @@ def _derive_batch_locked(
                     canvas_size=canvas,
                     band_name="strong_2200_2390_nm",
                     minimum_threshold_coefficients=minimum_threshold_coefficients,
+                    broad_slope=broad_slope,
+                    broad_rotation_degrees=broad_rotation_degrees,
+                    apply_broad_dwt=apply_broad_dwt,
                 )
                 dual_local = np.minimum(weak_local, strong_local).astype(np.float32)
                 output_score_path = derived_scene / "score_maps.npz"
@@ -629,6 +720,17 @@ def _derive_batch_locked(
                     "shape": list(valid.shape),
                     "analysis_valid_pixels": int(np.count_nonzero(valid)),
                     "safe_canvas_size": canvas,
+                    "broad_slope_estimation": slope_diagnostics,
+                    "broad_slope_search": str(
+                        (
+                            output_batch
+                            / product_id
+                            / "broad_slope_search.csv"
+                        ).resolve()
+                    ),
+                    "broad_slope_search_sha256": _sha256(
+                        derived_scene / "broad_slope_search.csv"
+                    ),
                     "source_score_maps": str(score_path.resolve()),
                     "source_score_maps_sha256": _sha256(score_path),
                     "output_score_maps": str(
@@ -640,7 +742,12 @@ def _derive_batch_locked(
                     "strong": strong_diagnostics,
                     "elapsed_seconds": float(time.perf_counter() - scene_started),
                 }
-                _write_json(derived_scene / "pdf_dwt_diagnostics.json", diagnostic)
+                diagnostic_path = derived_scene / "pdf_dwt_diagnostics.json"
+                _write_json(diagnostic_path, diagnostic)
+                diagnostic["diagnostics_file"] = str(
+                    (output_batch / product_id / diagnostic_path.name).resolve()
+                )
+                diagnostic["diagnostics_file_sha256"] = _sha256(diagnostic_path)
                 derived_scene_summary["posthoc_score_correction"] = diagnostic
                 scene_diagnostics.append(diagnostic)
                 del (
@@ -656,6 +763,8 @@ def _derive_batch_locked(
                     strong_local,
                     dual_local,
                     protected,
+                    slope_rows,
+                    scene_slope_rows,
                 )
                 gc.collect()
             else:
@@ -675,17 +784,39 @@ def _derive_batch_locked(
         provenance["finished_utc"] = finished
         provenance["usable_scene_count"] = len(scene_diagnostics)
         provenance["scene_diagnostics"] = scene_diagnostics
-        _write_json(temporary / "posthoc_pdf_dwt_summary.json", provenance)
+        if all_slope_search_rows:
+            write_slope_search_csv(
+                all_slope_search_rows,
+                temporary / "posthoc_pdf_dwt_slope_search.csv",
+            )
         write_scene_metrics_csv(
             provenance, temporary / "posthoc_pdf_dwt_scene_metrics.csv"
         )
+        write_scene_slopes_csv(
+            provenance, temporary / "posthoc_pdf_dwt_scene_slopes.csv"
+        )
+        audit_names = (
+            "posthoc_pdf_dwt_slope_search.csv",
+            "posthoc_pdf_dwt_scene_metrics.csv",
+            "posthoc_pdf_dwt_scene_slopes.csv",
+        )
+        provenance["audit_output_sha256"] = {
+            name: _sha256(temporary / name)
+            for name in audit_names
+            if (temporary / name).is_file()
+        }
+        _write_json(temporary / "posthoc_pdf_dwt_summary.json", provenance)
 
         derived_batch_summary = dict(source_summary)
         derived_batch_summary["analysis_config"] = derived_config
         derived_batch_summary["source_batch"] = str(source_batch)
         derived_batch_summary["posthoc_score_correction"] = {
             "analysis_version": ANALYSIS_VERSION,
-            "method": "PDF broad DWT slope 1.257172 levels 3-5, then thin median slope 0.977346",
+            "method": (
+                "confidence-gated per-scene shared weak/strong broad-slope "
+                "search, PDF DWT levels 3-5 when supported, then thin median "
+                "slope 0.977346"
+            ),
             "provenance": str(
                 (output_batch / "posthoc_pdf_dwt_summary.json").resolve()
             ),
@@ -697,6 +828,12 @@ def _derive_batch_locked(
             ),
             "posthoc_pdf_dwt_scene_metrics": str(
                 (output_batch / "posthoc_pdf_dwt_scene_metrics.csv").resolve()
+            ),
+            "posthoc_pdf_dwt_scene_slopes": str(
+                (output_batch / "posthoc_pdf_dwt_scene_slopes.csv").resolve()
+            ),
+            "posthoc_pdf_dwt_slope_search": str(
+                (output_batch / "posthoc_pdf_dwt_slope_search.csv").resolve()
             ),
         }
         _write_json(temporary / "batch_summary.json", derived_batch_summary)
@@ -730,10 +867,77 @@ def _derive_batch_locked(
         raise
 
 
+def write_scene_slopes_csv(summary: dict[str, Any], path: Path) -> None:
+    fields = [
+        "product_id",
+        "selected_angle_deg",
+        "selected_slope_row_per_column",
+        "selection_mode",
+        "slope_status",
+        "slope_support_failures",
+        "selected_joint_fractional_gain",
+        "selected_joint_absolute_gain",
+        "selected_peak_prominence",
+        "selected_peak_robust_z",
+        "second_peak_prominence",
+        "selected_at_search_edge",
+        "weak_best_angle_deg",
+        "strong_best_angle_deg",
+        "per_band_angle_spread_deg",
+        "protected_sample_pixels_excluded",
+        "safe_canvas_size",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        for scene in summary.get("scene_diagnostics", []):
+            slope = scene["broad_slope_estimation"]
+            per_band = slope.get("per_band_best_angle_deg", {})
+            writer.writerow(
+                {
+                    "product_id": scene["product_id"],
+                    "selected_angle_deg": slope["selected_angle_deg"],
+                    "selected_slope_row_per_column": slope[
+                        "selected_slope_row_per_column"
+                    ],
+                    "selection_mode": slope["selection_mode"],
+                    "slope_status": slope["slope_status"],
+                    "slope_support_failures": ";".join(
+                        slope.get("slope_support_failures", [])
+                    ),
+                    "selected_joint_fractional_gain": slope[
+                        "selected_joint_fractional_gain"
+                    ],
+                    "selected_joint_absolute_gain": slope[
+                        "selected_joint_absolute_gain"
+                    ],
+                    "selected_peak_prominence": slope[
+                        "selected_peak_prominence"
+                    ],
+                    "selected_peak_robust_z": slope[
+                        "selected_peak_robust_z"
+                    ],
+                    "second_peak_prominence": slope["second_peak_prominence"],
+                    "selected_at_search_edge": slope["selected_at_search_edge"],
+                    "weak_best_angle_deg": per_band.get("weak"),
+                    "strong_best_angle_deg": per_band.get("strong"),
+                    "per_band_angle_spread_deg": slope[
+                        "per_band_angle_spread_deg"
+                    ],
+                    "protected_sample_pixels_excluded": slope[
+                        "protected_sample_pixels_excluded"
+                    ],
+                    "safe_canvas_size": scene["safe_canvas_size"],
+                }
+            )
+
+
 def write_scene_metrics_csv(summary: dict[str, Any], path: Path) -> None:
     fields = [
         "product_id",
         "band",
+        "scene_broad_angle_deg",
+        "scene_broad_slope_row_per_column",
         "source_positive_z3_pixels",
         "pdf_positive_z3_pixels",
         "source_reverse_z3_pixels",
@@ -758,6 +962,12 @@ def write_scene_metrics_csv(summary: dict[str, Any], path: Path) -> None:
                     {
                         "product_id": scene["product_id"],
                         "band": band,
+                        "scene_broad_angle_deg": scene[
+                            "broad_slope_estimation"
+                        ]["selected_angle_deg"],
+                        "scene_broad_slope_row_per_column": scene[
+                            "broad_slope_estimation"
+                        ]["selected_slope_row_per_column"],
                         "source_positive_z3_pixels": source_tail["positive_z3_pixels"],
                         "pdf_positive_z3_pixels": pdf_tail["positive_z3_pixels"],
                         "source_reverse_z3_pixels": source_tail["reverse_z3_pixels"],
@@ -802,15 +1012,89 @@ def build_parser() -> argparse.ArgumentParser:
             "DWT level (default: 300; use 500 for the level-5-off sensitivity)."
         ),
     )
+    defaults = SceneSlopeSearchConfig()
+    parser.add_argument(
+        "--slope-angle-min-deg", type=float, default=defaults.angle_min_deg
+    )
+    parser.add_argument(
+        "--slope-angle-max-deg", type=float, default=defaults.angle_max_deg
+    )
+    parser.add_argument(
+        "--slope-angle-step-deg", type=float, default=defaults.angle_step_deg
+    )
+    parser.add_argument(
+        "--slope-search-positive-only",
+        action="store_true",
+        help="Disable the default negative-slope branch (not used for this reanalysis).",
+    )
+    parser.add_argument(
+        "--slope-line-bin-width",
+        type=float,
+        default=defaults.line_bin_width_pixels,
+    )
+    parser.add_argument(
+        "--slope-minimum-line-pixels",
+        type=int,
+        default=defaults.minimum_pixels_per_line,
+    )
+    parser.add_argument(
+        "--slope-sample-step", type=int, default=defaults.sample_step
+    )
+    parser.add_argument(
+        "--slope-trend-window-deg",
+        type=float,
+        default=defaults.trend_window_deg,
+    )
+    parser.add_argument(
+        "--slope-local-window-deg",
+        type=float,
+        default=defaults.local_window_deg,
+    )
+    parser.add_argument(
+        "--slope-edge-exclusion-deg",
+        type=float,
+        default=defaults.edge_exclusion_deg,
+    )
+    parser.add_argument(
+        "--slope-minimum-peak-robust-z",
+        type=float,
+        default=defaults.minimum_peak_robust_z,
+        help=(
+            "Provisional no-stripe safety gate: selected prominence divided "
+            "by its angular-curve robust scale (default: 5)."
+        ),
+    )
+    parser.add_argument(
+        "--slope-thin-exclusion-half-width-deg",
+        type=float,
+        default=defaults.excluded_half_width_deg,
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     args = build_parser().parse_args(argv)
+    defaults = SceneSlopeSearchConfig()
+    slope_search_config = SceneSlopeSearchConfig(
+        angle_min_deg=args.slope_angle_min_deg,
+        angle_max_deg=args.slope_angle_max_deg,
+        angle_step_deg=args.slope_angle_step_deg,
+        search_negative_slopes=not args.slope_search_positive_only,
+        line_bin_width_pixels=args.slope_line_bin_width,
+        minimum_pixels_per_line=args.slope_minimum_line_pixels,
+        sample_step=args.slope_sample_step,
+        trend_window_deg=args.slope_trend_window_deg,
+        local_window_deg=args.slope_local_window_deg,
+        edge_exclusion_deg=args.slope_edge_exclusion_deg,
+        minimum_peak_robust_z=args.slope_minimum_peak_robust_z,
+        excluded_angles_deg=defaults.excluded_angles_deg,
+        excluded_half_width_deg=args.slope_thin_exclusion_half_width_deg,
+    )
     summary = derive_batch(
         args.source_batch,
         args.output_batch,
         minimum_threshold_coefficients=args.minimum_threshold_coefficients,
+        slope_search_config=slope_search_config,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return summary
