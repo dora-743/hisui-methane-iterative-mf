@@ -26,6 +26,11 @@ def robust_std(values: np.ndarray, mask: np.ndarray | None = None) -> float:
     return value if value > 0 else float(np.std(arr))
 
 
+def _finite_or_none(value: float) -> float | None:
+    number = float(value)
+    return number if np.isfinite(number) else None
+
+
 def nearest_fill(image: np.ndarray, invalid_mask: np.ndarray) -> np.ndarray:
     image = np.asarray(image, dtype=float)
     invalid = np.asarray(invalid_mask, dtype=bool) | ~np.isfinite(image)
@@ -110,6 +115,42 @@ def histogram_difference_threshold(
         return 0.0
     hist_target, edges = np.histogram(target_abs, bins=bins, range=(0, upper), density=True)
     hist_reference, _ = np.histogram(reference_abs, bins=bins, range=(0, upper), density=True)
+    difference = hist_target - hist_reference
+    maximum = float(np.max(difference))
+    if not np.isfinite(maximum) or maximum <= 0:
+        return 0.0
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    selected = np.flatnonzero(difference >= diff_fraction * maximum)
+    if selected.size == 0:
+        return 0.0
+    return min(float(centers[selected[-1]]), float(np.percentile(target_abs, 90)))
+
+
+def masked_histogram_difference_threshold(
+    target: np.ndarray,
+    reference: np.ndarray,
+    support: np.ndarray,
+    *,
+    bins: int = 128,
+    diff_fraction: float = 0.25,
+) -> float:
+    """Histogram-difference threshold using only fully supported coefficients."""
+    mask = np.asarray(support, dtype=bool)
+    if mask.shape != np.asarray(target).shape or mask.shape != np.asarray(reference).shape:
+        raise ValueError("support must match both coefficient arrays")
+    target_abs = np.abs(np.asarray(target, dtype=float)[mask])
+    reference_abs = np.abs(np.asarray(reference, dtype=float)[mask])
+    target_abs = target_abs[np.isfinite(target_abs)]
+    reference_abs = reference_abs[np.isfinite(reference_abs)]
+    if target_abs.size == 0 or reference_abs.size == 0:
+        return 0.0
+    upper = float(np.percentile(np.concatenate([target_abs, reference_abs]), 99.5))
+    if not np.isfinite(upper) or upper <= 0:
+        return 0.0
+    hist_target, edges = np.histogram(target_abs, bins=bins, range=(0, upper), density=True)
+    hist_reference, _ = np.histogram(
+        reference_abs, bins=bins, range=(0, upper), density=True
+    )
     difference = hist_target - hist_reference
     maximum = float(np.max(difference))
     if not np.isfinite(maximum) or maximum <= 0:
@@ -210,6 +251,218 @@ def wavelet_horizontal_destripe(
     corrected[~np.isfinite(image)] = np.nan
     stripe[~np.isfinite(image)] = np.nan
     return corrected, stripe, rows
+
+
+def _central_constant_pad(
+    image: np.ndarray, canvas_size: int, *, fill_value: float = 0.0
+) -> tuple[np.ndarray, tuple[slice, slice]]:
+    height, width = image.shape
+    if canvas_size < max(height, width):
+        raise ValueError("canvas_size must be at least the largest image dimension")
+    y0 = (canvas_size - height) // 2
+    x0 = (canvas_size - width) // 2
+    y1 = canvas_size - height - y0
+    x1 = canvas_size - width - x0
+    padded = np.pad(
+        image,
+        ((y0, y1), (x0, x1)),
+        mode="constant",
+        constant_values=fill_value,
+    )
+    return padded, (slice(y0, y0 + height), slice(x0, x0 + width))
+
+
+def _haar_support_levels(support: np.ndarray, levels: int) -> list[np.ndarray]:
+    current = np.asarray(support, dtype=float)
+    outputs: list[np.ndarray] = []
+    for _ in range(levels):
+        if current.shape[0] % 2 or current.shape[1] % 2:
+            raise ValueError("support canvas dimensions must be divisible by 2**levels")
+        current = (
+            current[0::2, 0::2]
+            + current[0::2, 1::2]
+            + current[1::2, 0::2]
+            + current[1::2, 1::2]
+        ) / 4.0
+        outputs.append(current)
+    return outputs
+
+
+def support_aware_wavelet_horizontal_destripe(
+    image: np.ndarray,
+    valid_mask: np.ndarray,
+    protected_mask: np.ndarray,
+    *,
+    slope: float,
+    rotation_angle_deg: float,
+    levels_to_filter: tuple[int, ...],
+    max_level: int = 6,
+    threshold_scale: float = 0.75,
+    diff_fraction: float = 0.25,
+    canvas_size: int,
+    minimum_support_fraction: float = 0.95,
+    minimum_estimation_support_fraction: float = 1.0,
+    minimum_threshold_coefficients: int = 500,
+    operation_name: str = "support_aware_directional_dwt",
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, float | int | str | None]]]:
+    """Remove broad stripes without using invalid, protected, or pad coefficients.
+
+    The image is filled only to make rotation and the Haar transform numerical.
+    A separately rotated support mask is propagated through every Haar level.
+    Thresholds are estimated from coefficients whose rotated coverage average
+    meets ``minimum_estimation_support_fraction`` (normally 1.0) for valid,
+    non-protected source pixels.  Thresholding is applied where the analogous
+    valid-coverage average meets ``minimum_support_fraction`` (normally 0.95).
+    Reflect padding therefore cannot set the coefficient threshold.
+    """
+    array = np.asarray(image, dtype=float)
+    valid = np.asarray(valid_mask, dtype=bool)
+    protected = np.asarray(protected_mask, dtype=bool)
+    if array.ndim != 2 or valid.shape != array.shape or protected.shape != array.shape:
+        raise ValueError("image, valid_mask, and protected_mask must share a 2-D shape")
+    if not (0.0 < minimum_support_fraction <= 1.0):
+        raise ValueError("minimum_support_fraction must be in (0, 1]")
+    if not (0.0 < minimum_estimation_support_fraction <= 1.0):
+        raise ValueError("minimum_estimation_support_fraction must be in (0, 1]")
+    if minimum_threshold_coefficients < 1:
+        raise ValueError("minimum_threshold_coefficients must be positive")
+    if canvas_size % (2**max_level):
+        raise ValueError("canvas_size must be divisible by 2**max_level")
+    finite_valid = valid & np.isfinite(array)
+    if not finite_valid.any():
+        raise ValueError("no finite valid pixels are available")
+    protected = protected & finite_valid
+    filled = nearest_fill(array, (~finite_valid) | protected)
+    padded, crop = central_reflect_pad(filled, canvas_size)
+
+    valid_canvas, support_crop = _central_constant_pad(
+        finite_valid.astype(float), canvas_size
+    )
+    threshold_canvas, _ = _central_constant_pad(
+        (finite_valid & ~protected).astype(float), canvas_size
+    )
+    if support_crop != crop:
+        raise RuntimeError("image and support padding disagree")
+
+    rotated = ndimage.rotate(
+        padded,
+        angle=rotation_angle_deg,
+        reshape=False,
+        order=1,
+        mode="reflect",
+    )
+    rotated_valid = np.clip(
+        ndimage.rotate(
+            valid_canvas,
+            angle=rotation_angle_deg,
+            reshape=False,
+            order=1,
+            mode="constant",
+            cval=0.0,
+            prefilter=False,
+        ),
+        0.0,
+        1.0,
+    )
+    rotated_threshold = np.clip(
+        ndimage.rotate(
+            threshold_canvas,
+            angle=rotation_angle_deg,
+            reshape=False,
+            order=1,
+            mode="constant",
+            cval=0.0,
+            prefilter=False,
+        ),
+        0.0,
+        1.0,
+    )
+    approximation, details = haar_decompose2d(rotated, max_level)
+    valid_levels = _haar_support_levels(rotated_valid, max_level)
+    threshold_levels = _haar_support_levels(rotated_threshold, max_level)
+
+    new_details: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    diagnostics: list[dict[str, float | int | str | None]] = []
+    for level, ((horizontal, vertical, diagonal), valid_fraction, threshold_fraction) in enumerate(
+        zip(details, valid_levels, threshold_levels), start=1
+    ):
+        apply_support = valid_fraction >= minimum_support_fraction
+        estimate_support = apply_support & (
+            threshold_fraction
+            >= minimum_estimation_support_fraction - 1.0e-12
+        )
+        eligible = int(np.count_nonzero(estimate_support))
+        requested = level in levels_to_filter
+        filtered = requested and eligible >= minimum_threshold_coefficients
+        if filtered:
+            raw_threshold = masked_histogram_difference_threshold(
+                horizontal,
+                vertical,
+                estimate_support,
+                diff_fraction=diff_fraction,
+            )
+            applied_threshold = threshold_scale * raw_threshold
+            filtered_horizontal = horizontal.copy()
+            filtered_horizontal[apply_support] = soft_threshold(
+                horizontal[apply_support], applied_threshold
+            )
+            status = "filtered" if applied_threshold > 0 else "zero_threshold"
+        else:
+            raw_threshold = 0.0
+            applied_threshold = 0.0
+            filtered_horizontal = horizontal
+            status = "insufficient_support" if requested else "not_requested"
+        diagnostics.append(
+            {
+                "operation": operation_name,
+                "slope": float(slope),
+                "rotation_angle_deg": float(rotation_angle_deg),
+                "level": level,
+                "requested": int(requested),
+                "filtered": int(filtered),
+                "status": status,
+                "raw_threshold": float(raw_threshold),
+                "applied_threshold": float(applied_threshold),
+                "estimate_coefficient_count": eligible,
+                "apply_coefficient_count": int(np.count_nonzero(apply_support)),
+                "total_coefficient_count": int(horizontal.size),
+                "minimum_application_support_fraction": float(
+                    minimum_support_fraction
+                ),
+                "minimum_estimation_support_fraction": float(
+                    minimum_estimation_support_fraction
+                ),
+                "horizontal_robust_std_supported": _finite_or_none(
+                    robust_std(horizontal, estimate_support)
+                ),
+                "vertical_robust_std_supported": _finite_or_none(
+                    robust_std(vertical, estimate_support)
+                ),
+                "horizontal_energy_supported": float(
+                    np.sum(horizontal[estimate_support] ** 2)
+                ),
+                "vertical_energy_supported": float(
+                    np.sum(vertical[estimate_support] ** 2)
+                ),
+            }
+        )
+        new_details.append((filtered_horizontal, vertical, diagonal))
+
+    reconstructed = haar_reconstruct2d(approximation, new_details)
+    stripe_rotated = rotated - reconstructed
+    stripe_padded = ndimage.rotate(
+        stripe_rotated,
+        angle=-rotation_angle_deg,
+        reshape=False,
+        order=1,
+        mode="constant",
+        cval=0.0,
+    )
+    stripe = stripe_padded[crop]
+    corrected = array - stripe
+    corrected[~finite_valid] = np.nan
+    stripe[~finite_valid] = np.nan
+    return corrected, stripe, diagnostics
 
 
 def fixed_slope_line_ids(

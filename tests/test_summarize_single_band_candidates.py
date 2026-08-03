@@ -143,6 +143,60 @@ class SummarizeSingleBandCandidatesTests(unittest.TestCase):
         self.assertEqual(dual_row["strip_product_ids"], "HSHL1G_test")
         self.assertEqual(dual_row["contributing_product_ids"], "HSHL1G_test")
 
+    def test_shape_flag_uses_only_supported_scene_broad_angle(self) -> None:
+        shape = (64, 64)
+        weak = np.zeros(shape, dtype=np.float32)
+        strong = np.zeros(shape, dtype=np.float32)
+        mask = np.zeros(shape, dtype=bool)
+        columns = np.arange(6, 56)
+        rows = 10 + np.rint(np.tan(np.deg2rad(20.0)) * (columns - 6)).astype(int)
+        weak[rows, columns] = 4.0
+        mask[rows, columns] = True
+
+        source = self._source("HSHL1G_scene_angle", weak, strong)
+        source.stripe_angles_deg = (44.3436, 20.0)
+        source.broad_slope_status = "supported"
+        mosaic = TailMosaic(
+            band1600=weak,
+            band2200=strong,
+            dual=np.minimum(weak, strong),
+            mask1600=mask,
+            mask2200=np.zeros(shape, dtype=bool),
+            coincident=np.zeros(shape, dtype=bool),
+            strict_dual=np.zeros(shape, dtype=bool),
+        )
+        supported_rows, _selected = _extract_regions(
+            self._geometry_for_source(source),
+            mosaic,
+            threshold=3.0,
+            minimum_pixels=3,
+            tail="positive_methane_like",
+            sign=1,
+        )
+        self.assertEqual(len(supported_rows), 1)
+        self.assertTrue(supported_rows[0]["shape_stripe_direction_flag"])
+        self.assertEqual(
+            supported_rows[0]["nearest_stripe_direction_kind"], "broad_scene"
+        )
+        self.assertEqual(
+            supported_rows[0]["nearest_stripe_slope_status"], "supported"
+        )
+
+        source.stripe_angles_deg = (44.3436,)
+        source.broad_slope_status = "unsupported"
+        unsupported_rows, _selected = _extract_regions(
+            self._geometry_for_source(source),
+            mosaic,
+            threshold=3.0,
+            minimum_pixels=3,
+            tail="positive_methane_like",
+            sign=1,
+        )
+        self.assertFalse(unsupported_rows[0]["shape_stripe_direction_flag"])
+        self.assertEqual(
+            unsupported_rows[0]["nearest_stripe_direction_kind"], "thin_fixed"
+        )
+
     def test_positive_and_reverse_are_exactly_sign_symmetric(self) -> None:
         weak = np.zeros((12, 12), dtype=np.float32)
         strong = np.zeros_like(weak)

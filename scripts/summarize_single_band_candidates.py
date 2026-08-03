@@ -43,7 +43,7 @@ from hisui_l1g_io import (
 from plot_hisui_candidate_crop import browse_crop, crop_bounds
 
 
-ANALYSIS_VERSION = "2026-08-02-v2"
+ANALYSIS_VERSION = "2026-08-03-v5-scene-stripe-confidence"
 SUPPORT_ORDER = (
     "1600_only",
     "2200_only",
@@ -98,6 +98,12 @@ REGION_FIELDS = (
     "elongation",
     "major_axis_angle_deg_from_east",
     "shape_stripe_direction_flag",
+    "nearest_stripe_product_id",
+    "nearest_stripe_direction_kind",
+    "nearest_stripe_angle_deg",
+    "nearest_stripe_angle_difference_deg",
+    "nearest_stripe_slope_status",
+    "contributing_broad_slope_statuses",
     "scene_spanning_line_flag",
     "minimum_distance_to_cloud_pixels",
     "minimum_distance_to_invalid_pixels",
@@ -141,6 +147,11 @@ class SceneSource:
     cloud: np.ndarray
     weak: np.ndarray
     strong: np.ndarray
+    stripe_angles_deg: tuple[float, ...] = (
+        math.degrees(math.atan(0.978)) % 180.0,
+        math.degrees(math.atan(1.267)) % 180.0,
+    )
+    broad_slope_status: str = "legacy_fixed"
     offset: tuple[int, int] = (0, 0)
 
 
@@ -351,6 +362,32 @@ def _load_sources(
             raster_shape = (int(tif.pages[0].imagelength), int(tif.pages[0].imagewidth))
         if raster_shape != valid.shape:
             raise ValueError(f"{product_id}: score-map shape differs from source GeoTIFF")
+        thin_slope = float(batch_config.get("posthoc_thin_slope", 0.978))
+        posthoc = summary.get("posthoc_score_correction")
+        broad_slope_status = "legacy_fixed"
+        if batch_config.get("posthoc_broad_slope_mode") == "per_scene_shared_weak_strong":
+            if not isinstance(posthoc, dict):
+                raise ValueError(f"{product_id}: scene-adaptive slope diagnostics missing")
+            slope_estimation = posthoc.get("broad_slope_estimation")
+            if not isinstance(slope_estimation, dict):
+                raise ValueError(f"{product_id}: broad slope estimation missing")
+            broad_angle = float(slope_estimation.get("selected_angle_deg", math.nan))
+            if not np.isfinite(broad_angle):
+                raise ValueError(f"{product_id}: selected broad angle is invalid")
+            broad_slope_status = str(
+                slope_estimation.get("slope_status", "unsupported_unrated")
+            )
+        else:
+            broad_slope = float(
+                batch_config.get(
+                    "posthoc_broad_slope",
+                    batch_config.get("broad_stripe_slope", 1.267),
+                )
+            )
+            broad_angle = math.degrees(math.atan(broad_slope))
+        stripe_angles = [float(math.degrees(math.atan(thin_slope)) % 180.0)]
+        if broad_slope_status in {"supported", "legacy_fixed"}:
+            stripe_angles.append(float(broad_angle % 180.0))
         sources.append(
             SceneSource(
                 product=product,
@@ -364,6 +401,8 @@ def _load_sources(
                 cloud=cloud,
                 weak=weak,
                 strong=strong,
+                stripe_angles_deg=tuple(stripe_angles),
+                broad_slope_status=broad_slope_status,
             )
         )
     if not sources:
@@ -626,7 +665,6 @@ def _extract_regions(
     objects = ndimage.find_objects(labels, max_label=count)
     rows: list[dict[str, Any]] = []
     selected_labels = np.zeros(count + 1, dtype=bool)
-    stripe_angles = [math.degrees(math.atan(value)) % 180.0 for value in (0.978, 1.267)]
     for label_id, section in enumerate(objects, start=1):
         if section is None:
             continue
@@ -666,10 +704,38 @@ def _extract_regions(
         angle = float(math.degrees(math.atan2(major_vector[0], major_vector[1])) % 180.0)
         height = int(section[0].stop - section[0].start)
         width = int(section[1].stop - section[1].start)
+        contributing_ids = _contributing_product_ids(
+            geometry, yy, xx, threshold=threshold, sign=sign
+        )
+        contributing_set = set(contributing_ids)
+        stripe_directions: list[tuple[str, str, float, str]] = []
+        for source in geometry.sources:
+            if source.product_id not in contributing_set:
+                continue
+            for index, direction_angle in enumerate(source.stripe_angles_deg):
+                direction_kind = "thin_fixed" if index == 0 else "broad_scene"
+                direction_status = (
+                    "fixed" if index == 0 else source.broad_slope_status
+                )
+                stripe_directions.append(
+                    (
+                        source.product_id,
+                        direction_kind,
+                        float(direction_angle),
+                        direction_status,
+                    )
+                )
+        nearest_stripe = min(
+            stripe_directions,
+            key=lambda value: _angle_difference_degrees(angle, value[2]),
+        )
+        nearest_stripe_difference = _angle_difference_degrees(
+            angle, nearest_stripe[2]
+        )
         stripe_flag = bool(
             max(height, width) >= 10
             and minor < 1.0
-            and any(_angle_difference_degrees(angle, value) <= 5.0 for value in stripe_angles)
+            and nearest_stripe_difference <= 5.0
         )
         line_flag = bool(size >= 100 and elongation >= 10.0)
         cloud_distance = float(np.min(geometry.cloud_distance[yy, xx]))
@@ -719,9 +785,6 @@ def _extract_regions(
             band=primary_band,
             sign=sign,
         )
-        contributing_ids = _contributing_product_ids(
-            geometry, yy, xx, threshold=threshold, sign=sign
-        )
         rows.append(
             {
                 "global_rank": None,
@@ -765,6 +828,16 @@ def _extract_regions(
                 "elongation": elongation,
                 "major_axis_angle_deg_from_east": angle,
                 "shape_stripe_direction_flag": stripe_flag,
+                "nearest_stripe_product_id": nearest_stripe[0],
+                "nearest_stripe_direction_kind": nearest_stripe[1],
+                "nearest_stripe_angle_deg": nearest_stripe[2],
+                "nearest_stripe_angle_difference_deg": nearest_stripe_difference,
+                "nearest_stripe_slope_status": nearest_stripe[3],
+                "contributing_broad_slope_statuses": ";".join(
+                    f"{source.product_id}={source.broad_slope_status}"
+                    for source in geometry.sources
+                    if source.product_id in contributing_set
+                ),
                 "scene_spanning_line_flag": line_flag,
                 "minimum_distance_to_cloud_pixels": cloud_distance,
                 "minimum_distance_to_invalid_pixels": invalid_distance,
@@ -1380,7 +1453,7 @@ def summarize(
                     "known-site audit, and gallery; potentially optimistic"
                 ),
                 "review_shortlist": "at least 5 threshold pixels in one band, peak>=5, elongation<=10, whole-region cloud distance>=5 px, not scene-spanning line",
-                "conservative_single_window": "pure one-window support; extent>=8, >=2 core pixels at z>=5, peak>=6, bbox>=3x3, minor-axis SD>=0.6, elongation<=8, counterpart median>=0, cloud distance>=5 px, invalid-boundary distance>=2 px, no fixed-direction thin-stripe or scene-spanning-line flag",
+                "conservative_single_window": "pure one-window support; extent>=8, >=2 core pixels at z>=5, peak>=6, bbox>=3x3, minor-axis SD>=0.6, elongation<=8, counterpart median>=0, cloud distance>=5 px, invalid-boundary distance>=2 px, no fixed thin direction or supported scene-broad direction match, and no scene-spanning-line flag",
             },
             "aggregate": {
                 "usable_product_count": len(sources),
